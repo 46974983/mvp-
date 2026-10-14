@@ -4,8 +4,10 @@ import {
   createBrowserStorage,
   DEFAULT_CLOSE_TO_TRAY,
   DEFAULT_PERSONA,
+  DEFAULT_GLOBAL_SHORTCUT,
   DEFAULT_NOTIFY_ON_REPLY_COMPLETE,
 } from '@/services/storage';
+import type { StorageService } from '@/services/storage';
 import {
   createBrowserPlatformService,
   type PlatformCapability,
@@ -18,10 +20,10 @@ import {
   VALID_MODEL_CONFIG,
 } from './helpers';
 
-function setup(platform?: PlatformService) {
+function setup(platform?: PlatformService, storage?: StorageService) {
   const webStorage = createMemoryStorage();
   const services = createTestServices({
-    storage: createBrowserStorage(webStorage),
+    storage: storage ?? createBrowserStorage(webStorage),
     model: createInstantProvider(),
     ...(platform ? { platform } : {}),
   });
@@ -444,5 +446,143 @@ describe('开机自启', () => {
     // 自启属于系统设置，不在「本地数据」范围内
     expect(current()).toBe(true);
     expect(store.getState().autostartEnabled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 全局快捷键（阶段 C）
+// ---------------------------------------------------------------------------
+
+/** 造一个「声称有全局快捷键能力」的平台，记录注册请求 */
+function createShortcutPlatform() {
+  const base = createBrowserPlatformService();
+  const calls: Array<string | null> = [];
+  let accelerator = '';
+  let registered = false;
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-shortcut',
+    probeCapabilities: async () => new Set<PlatformCapability>(['global-shortcut']),
+    globalShortcutStatus: async () => ({ accelerator, registered }),
+    setGlobalShortcut: async (next: string | null) => {
+      calls.push(next);
+
+      // 模拟「键被别的程序占了」：**注册失败时什么都不会变** ——
+      // 旧的还在，界面显示的也还是旧的。这正是真实行为该有的样子。
+      if (next === 'CommandOrControl+Shift+9') {
+        return { ok: false, message: '注册失败，这个组合键可能已被别的程序占用。' };
+      }
+
+      accelerator = next ?? '';
+      registered = next !== null && next !== '';
+      return { ok: true, message: '已注册。' };
+    },
+  };
+
+  return {
+    platform,
+    calls,
+    state: () => ({ accelerator, registered }),
+    /** 模拟「重置时把系统里的注册一并撤销」（真实环境由 Rust 侧做） */
+    forget: () => {
+      accelerator = '';
+      registered = false;
+    },
+  };
+}
+
+describe('全局快捷键', () => {
+  it('默认不设 —— 抢系统唯一键位的事不默认开', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    expect(store.getState().globalShortcut).toBe('');
+    expect(DEFAULT_GLOBAL_SHORTCUT).toBe('');
+  });
+
+  it('浏览器模式探测不到这个能力', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    expect(store.getState().platformCapabilities).not.toContain('global-shortcut');
+  });
+
+  it('设置成功后内存与存储同步', async () => {
+    const { platform, state } = createShortcutPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    const result = await store.getState().setGlobalShortcut('CommandOrControl+Shift+K');
+
+    expect(result.ok).toBe(true);
+    expect(state()).toEqual({ accelerator: 'CommandOrControl+Shift+K', registered: true });
+    expect(store.getState().globalShortcut).toBe('CommandOrControl+Shift+K');
+    expect(store.getState().globalShortcutRegistered).toBe(true);
+    expect(store.getState().settings.shortcut.toggleWindow).toBe('CommandOrControl+Shift+K');
+  });
+
+  it('注册失败时界面不改 —— 不能显示一个看着像设好了其实没生效的键', async () => {
+    const { platform, state } = createShortcutPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    const result = await store.getState().setGlobalShortcut('CommandOrControl+Shift+9');
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('占用');
+    // 状态保持原样（原来没设，现在还是没设）
+    expect(state()).toEqual({ accelerator: '', registered: false });
+    expect(store.getState().globalShortcut).toBe('');
+  });
+
+  it('可以清除', async () => {
+    const { platform, state } = createShortcutPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().setGlobalShortcut('CommandOrControl+Shift+K');
+
+    const result = await store.getState().setGlobalShortcut(null);
+
+    expect(result.ok).toBe(true);
+    expect(state()).toEqual({ accelerator: '', registered: false });
+    expect(store.getState().globalShortcut).toBe('');
+  });
+
+  it('环境不支持时返回失败说明而不是抛错', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    const result = await store.getState().setGlobalShortcut('CommandOrControl+Shift+K');
+
+    expect(result.ok).toBe(false);
+    expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it('重置本地数据会把快捷键撤掉，包括系统里那一份', async () => {
+    const { platform, forget } = createShortcutPlatform();
+    const webStorage = createMemoryStorage();
+    const base = createBrowserStorage(webStorage);
+
+    // 真实环境里 reset_all_data 会连带把系统里的注册撤销（Rust 侧做的），
+    // 不做的话会出现「设置里没有这个键、实际却还生效」的漂移。这里跟着模拟。
+    const storage: StorageService = {
+      ...base,
+      reset: async () => {
+        await base.reset();
+        forget();
+      },
+    };
+
+    const { store } = setup(platform, storage);
+    await store.getState().load();
+    await store.getState().setGlobalShortcut('CommandOrControl+Shift+K');
+    expect(store.getState().globalShortcutRegistered).toBe(true);
+
+    await store.getState().resetAll();
+
+    expect(store.getState().globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
+    expect(store.getState().globalShortcutRegistered).toBe(false);
+    expect(store.getState().settings.shortcut.toggleWindow).toBe(DEFAULT_GLOBAL_SHORTCUT);
   });
 });

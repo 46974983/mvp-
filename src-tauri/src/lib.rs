@@ -27,6 +27,7 @@ mod models;
 mod notify;
 mod redact;
 mod secrets;
+mod shortcut;
 mod tray;
 mod window;
 
@@ -67,6 +68,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let database = Database::open(&data_dir.join(DATABASE_FILE))?;
@@ -93,6 +95,18 @@ pub fn run() {
 
             if !tray_available {
                 log::warn!("托盘不可用：关闭窗口将直接退出（藏起来会让应用失联）");
+            }
+
+            // 把上次设置的全局快捷键注册回来。
+            // 走的是和界面改键同一条 apply 路径，所以校验和失败提示都是一致的；
+            // 注册失败只记日志 —— 用户没在设置页，弹什么都看不到，
+            // 等他自己打开设置页时 global_shortcut_status 会如实显示「没注册上」。
+            let saved_shortcut = settings.shortcut.toggle_window.trim().to_string();
+            if !saved_shortcut.is_empty() {
+                let outcome = shortcut::apply(app.handle(), "", Some(&saved_shortcut));
+                if !outcome.ok {
+                    log::warn!("启动时注册全局快捷键失败：{}", outcome.message);
+                }
             }
 
             Ok(())
@@ -161,6 +175,9 @@ pub fn run() {
             // 开机自启（阶段 C）
             commands::autostart_status,
             commands::set_autostart,
+            // 全局快捷键（阶段 C）
+            commands::global_shortcut_status,
+            commands::set_global_shortcut,
         ])
         .run(tauri::generate_context!())
         .expect("启动桌面应用失败");

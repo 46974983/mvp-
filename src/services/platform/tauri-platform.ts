@@ -20,6 +20,7 @@ import {
   PLATFORM_CAPABILITIES,
   UnsupportedCapabilityError,
   type AutostartStatus,
+  type GlobalShortcutStatus,
   type NotificationOutcome,
   type NotificationRequest,
   type PlatformCapability,
@@ -85,5 +86,12 @@ export function createTauriPlatformService(): PlatformService {
     },
 
     autostartStatus: () => invoke<AutostartStatus>('autostart_status'),
+
+    globalShortcutStatus: () => invoke<GlobalShortcutStatus>('global_shortcut_status'),
+
+    setGlobalShortcut: (accelerator: string | null) =>
+      // 只有注册成功 Rust 才会落盘 —— 否则下次启动会拿同一个注定失败的键再试一遍。
+      // 走自己的窄命令而不是插件的 JS API：注册结果、键位占用、合法性校验都在 Rust 侧一处处理。
+      invoke<OperationResult>('set_global_shortcut', { accelerator }),
   };
 }

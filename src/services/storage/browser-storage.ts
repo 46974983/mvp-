@@ -61,12 +61,19 @@ export const DEFAULT_CLOSE_TO_TRAY = true;
 /** 「回复完成时发通知」的默认值。与 Rust 侧 DEFAULT_NOTIFY_ON_REPLY_COMPLETE 保持一致。 */
 export const DEFAULT_NOTIFY_ON_REPLY_COMPLETE = true;
 
+/**
+ * 全局快捷键的默认值：**空**。
+ * 与 Rust 侧 DEFAULT_GLOBAL_SHORTCUT 保持一致 —— 抢系统唯一键位的事不默认开。
+ */
+export const DEFAULT_GLOBAL_SHORTCUT = '';
+
 export function defaultSettings(): AppSettings {
   return {
     persona: { ...DEFAULT_PERSONA },
     model: { ...DEFAULT_MODEL_ENDPOINT },
     window: { closeToTray: DEFAULT_CLOSE_TO_TRAY },
     notification: { onReplyComplete: DEFAULT_NOTIFY_ON_REPLY_COMPLETE },
+    shortcut: { toggleWindow: DEFAULT_GLOBAL_SHORTCUT },
   };
 }
 

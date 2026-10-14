@@ -70,6 +70,10 @@ export interface SettingsState {
   autostartEnabled: boolean;
   /** 开启自启后会写进注册表的路径 —— 显示出来，让「注册的是哪个文件」可见 */
   autostartExePath: string;
+  /** 用户设置的全局快捷键（空串表示没设） */
+  globalShortcut: string;
+  /** 这个快捷键当前是否真的注册成功。可能为 false —— 组合键被别的程序占了 */
+  globalShortcutRegistered: boolean;
 
   load(): Promise<void>;
   savePersona(persona: PersonaConfig): Promise<OperationResult>;
@@ -87,6 +91,8 @@ export interface SettingsState {
   sendTestNotification(): Promise<NotificationOutcome>;
   /** 开启 / 关闭开机自启 */
   setAutostart(enabled: boolean): Promise<OperationResult>;
+  /** 设置全局快捷键；传 null 关闭 */
+  setGlobalShortcut(accelerator: string | null): Promise<OperationResult>;
   testConnection(config: ModelConfig): Promise<OperationResult>;
   resetAll(): Promise<void>;
 }
@@ -133,11 +139,13 @@ export function createSettingsStore(services: Services): SettingsStore {
     onReplyComplete: defaultSettings().notification.onReplyComplete,
     autostartEnabled: false,
     autostartExePath: '',
+    globalShortcut: defaultSettings().shortcut.toggleWindow,
+    globalShortcutRegistered: false,
 
     async load() {
       // 五件事互不依赖，并行拿。任何一件失败都不该让整个设置页打不开，
       // 所以「是否已存 Key」「位置」「凭据可用性」「能力集合」都各自兜底。
-      const [settings, apiKeyStored, location, credentialStatus, capabilities, autostart] =
+      const [settings, apiKeyStored, location, credentialStatus, capabilities, autostart, shortcut] =
         await Promise.all([
           settingsRepo.getSettings(),
           settingsRepo.hasStoredApiKey().catch(() => false),
@@ -146,6 +154,8 @@ export function createSettingsStore(services: Services): SettingsStore {
           probeCapabilities(),
           // 自启状态问系统，不读我们的设置表 —— 用户可能在任务管理器里改过
           services.platform.autostartStatus().catch(() => null),
+          // 快捷键的「值」存在我们这儿，「注册上没有」只有运行期知道，所以两者都要问
+          services.platform.globalShortcutStatus().catch(() => null),
         ]);
 
       set({
@@ -166,6 +176,9 @@ export function createSettingsStore(services: Services): SettingsStore {
         onReplyComplete: settings.notification.onReplyComplete,
         autostartEnabled: autostart?.enabled ?? false,
         autostartExePath: autostart?.exePath ?? '',
+        // 值以设置表为准，注册与否以运行期为准
+        globalShortcut: settings.shortcut.toggleWindow,
+        globalShortcutRegistered: shortcut?.registered ?? false,
       });
     },
 
@@ -287,6 +300,32 @@ export function createSettingsStore(services: Services): SettingsStore {
       }
     },
 
+    async setGlobalShortcut(accelerator) {
+      let result: OperationResult;
+      try {
+        result = await services.platform.setGlobalShortcut(accelerator);
+      } catch (error) {
+        return {
+          ok: false,
+          message: toUserFacingError(error, '当前运行环境不支持全局快捷键。'),
+        };
+      }
+
+      // 只有成功才更新内存：失败时 Rust 侧没有落盘、旧键也还生效，
+      // 界面跟着改就会显示一个「看着像设好了、其实没生效」的快捷键。
+      if (result.ok) {
+        const status = await services.platform.globalShortcutStatus().catch(() => null);
+        const next = status?.accelerator ?? accelerator ?? '';
+        set({
+          globalShortcut: next,
+          globalShortcutRegistered: status?.registered ?? false,
+          settings: { ...get().settings, shortcut: { toggleWindow: next } },
+        });
+      }
+
+      return result;
+    },
+
     async setAutostart(enabled) {
       let result: OperationResult;
       try {
@@ -323,12 +362,14 @@ export function createSettingsStore(services: Services): SettingsStore {
       await services.storage.reset();
 
       // 位置、凭据状态、能力集合和自启状态都重新探测一次（重置后可能变化）
-      const [location, credentialStatus, capabilities, autostart] = await Promise.all([
+      const [location, credentialStatus, capabilities, autostart, shortcut] = await Promise.all([
         services.storage.resolveLocation().catch(() => null),
         services.storage.probeCredentialStorage().catch(() => null),
         probeCapabilities(),
         // 自启属于系统设置，重置本地数据**不会**动它，这里只是把真实状态再读一遍
         services.platform.autostartStatus().catch(() => null),
+        // 快捷键会被重置清掉，但系统里注册的那个还在，所以要重新问一次
+        services.platform.globalShortcutStatus().catch(() => null),
       ]);
 
       const fresh = defaultSettings();
@@ -343,6 +384,8 @@ export function createSettingsStore(services: Services): SettingsStore {
         onReplyComplete: fresh.notification.onReplyComplete,
         autostartEnabled: autostart?.enabled ?? get().autostartEnabled,
         autostartExePath: autostart?.exePath ?? get().autostartExePath,
+        globalShortcut: shortcut?.accelerator ?? fresh.shortcut.toggleWindow,
+        globalShortcutRegistered: shortcut?.registered ?? false,
       });
     },
   }));

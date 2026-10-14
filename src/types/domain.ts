@@ -96,6 +96,20 @@ export interface NotificationSettings {
   onReplyComplete: boolean;
 }
 
+/**
+ * 全局快捷键偏好（非敏感，进 settings 表）
+ */
+export interface ShortcutSettings {
+  /**
+   * 唤起 / 收起主窗口的全局快捷键。空串表示没设。
+   *
+   * 默认**不设**，这一点和窗口、通知两项相反：全局快捷键抢的是**全系统唯一**的组合键，
+   * 开着一个就等于从别的程序手里拿走一个键位。影响超出本应用范围的事，
+   * 必须由用户主动选择。
+   */
+  toggleWindow: string;
+}
+
 /** 全部可持久化的应用设置 */
 export interface AppSettings {
   persona: PersonaConfig;
@@ -105,6 +119,8 @@ export interface AppSettings {
   window: WindowSettings;
   /** 通知偏好 */
   notification: NotificationSettings;
+  /** 全局快捷键偏好 */
+  shortcut: ShortcutSettings;
 }
 
 /** 主题模式 */

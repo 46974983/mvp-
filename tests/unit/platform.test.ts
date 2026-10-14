@@ -281,3 +281,24 @@ describe('开机自启', () => {
     expect(status.exePath).toBe('');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 全局快捷键（阶段 C）
+// ---------------------------------------------------------------------------
+
+describe('全局快捷键', () => {
+  it('动作类方法抛 UnsupportedCapabilityError', async () => {
+    await expect(
+      createBrowserPlatformService().setGlobalShortcut('CommandOrControl+Shift+K')
+    ).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(createBrowserPlatformService().setGlobalShortcut(null)).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError
+    );
+  });
+
+  it('查询类方法返回事实：网页拿不到页面之外的按键', async () => {
+    const status = await createBrowserPlatformService().globalShortcutStatus();
+
+    expect(status).toEqual({ accelerator: '', registered: false });
+  });
+});

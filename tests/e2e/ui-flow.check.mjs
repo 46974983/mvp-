@@ -314,6 +314,21 @@ try {
     (await page.locator(testId('autostart-exe-path')).count()) === 0
   );
 
+  // 全局快捷键：网页拿不到页面之外的按键，同样必须如实显示为不可用
+  check(
+    '浏览器模式如实说明没有全局快捷键',
+    await page.locator(testId('shortcut-unavailable')).isVisible()
+  );
+  check(
+    '快捷键录制按钮被禁用',
+    await page.locator(testId('shortcut-capture')).isDisabled()
+  );
+  check(
+    '能力列表把全局快捷键标为未开放',
+    (await page.locator('[data-capability="global-shortcut"]').getAttribute('data-available')) ===
+      'false'
+  );
+
   // 先故意填错：期望在字段旁边看到具体原因，而不是笼统的「连接失败」
   await page.fill(testId('model-api-url'), 'not-a-url');
   await page.click(testId('test-connection'));

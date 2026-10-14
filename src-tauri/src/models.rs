@@ -38,6 +38,13 @@ pub const DEFAULT_CLOSE_TO_TRAY: bool = true;
 /// 窗口在前台时不会打扰（见 notify.rs 的判定），所以开着不会带来噪音。
 pub const DEFAULT_NOTIFY_ON_REPLY_COMPLETE: bool = true;
 
+/// 全局快捷键的默认值：**空**
+///
+/// 这一项和前面两个默认开的设置不一样。全局快捷键抢的是**全系统唯一**的组合键，
+/// 开着一个就等于从别的程序手里拿走一个键位。这种影响超出本应用范围的事，
+/// 必须由用户主动选择，不能默认替他决定。
+pub const DEFAULT_GLOBAL_SHORTCUT: &str = "";
+
 /// 去掉首尾空白；全空白则回退到「未命名会话」
 pub fn normalize_title(title: &str) -> String {
     let trimmed = title.trim();
@@ -72,6 +79,7 @@ pub mod setting_keys {
     pub const MODEL_NAME: &str = "model.model_name";
     pub const WINDOW_CLOSE_TO_TRAY: &str = "window.close_to_tray";
     pub const NOTIFICATION_ON_REPLY_COMPLETE: &str = "notification.on_reply_complete";
+    pub const SHORTCUT_TOGGLE_WINDOW: &str = "shortcut.toggle_window";
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +190,34 @@ pub struct NotifyOutcome {
     pub reason: String,
 }
 
+/// 全局快捷键偏好（非敏感，进 settings 表）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShortcutSettings {
+    /// 唤起 / 收起主窗口的全局快捷键。空串表示没设。
+    pub toggle_window: String,
+}
+
+impl Default for ShortcutSettings {
+    fn default() -> Self {
+        Self {
+            toggle_window: DEFAULT_GLOBAL_SHORTCUT.to_string(),
+        }
+    }
+}
+
+/// 全局快捷键的当前状态。
+///
+/// `accelerator` 是用户设置的值，`registered` 是**运行期的事实** ——
+/// 两者可能不一致（比如那个键被别的程序占着，注册没成功），
+/// 界面必须能同时看到这两件事，否则会显示一个看起来生效其实没生效的快捷键。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalShortcutStatus {
+    pub accelerator: String,
+    pub registered: bool,
+}
+
 /// 全部可持久化的应用设置
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -190,6 +226,7 @@ pub struct AppSettings {
     pub model: PersistedModelConfig,
     pub window: WindowSettings,
     pub notification: NotificationSettings,
+    pub shortcut: ShortcutSettings,
 }
 
 impl Default for AppSettings {
@@ -206,6 +243,7 @@ impl Default for AppSettings {
             },
             window: WindowSettings::default(),
             notification: NotificationSettings::default(),
+            shortcut: ShortcutSettings::default(),
         }
     }
 }

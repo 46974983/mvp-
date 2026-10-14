@@ -20,8 +20,8 @@ use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::models::{
     AppSettings, AppendMessageInput, AutostartStatus, Conversation, CreateConversationInput,
-    Message, MessagePatch, ModelConfig, NotifyOutcome, OperationResult, PersonaConfig,
-    StorageLocation, WindowSettings,
+    GlobalShortcutStatus, Message, MessagePatch, ModelConfig, NotifyOutcome, OperationResult,
+    PersonaConfig, ShortcutSettings, StorageLocation, WindowSettings,
 };
 use crate::secrets::SecretStore;
 use crate::window::WindowRuntime;
@@ -182,6 +182,9 @@ pub async fn save_settings(
         db.save_model_projection(&settings.model)?;
         db.save_window_settings(&settings.window)?;
         db.save_notification_settings(&settings.notification)?;
+        // 刻意**不写** settings.shortcut：全局快捷键有副作用（要注册到系统），
+        // 必须走 set_global_shortcut 那条命令一次做完「注册 + 落盘」。
+        // 这里顺手写一下的话，会出现「库里存着但没注册」的状态。
         Ok(())
     })
     .await?;
@@ -270,9 +273,17 @@ pub async fn credential_storage_status(
 }
 
 #[tauri::command]
-pub async fn reset_all_data(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn reset_all_data(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let secrets = state.secrets.clone();
     let db = state.db.clone();
+
+    // 清库之前先把「系统里那些跟着设置走的东西」收回来。
+    //
+    // 不这么做的话会出现一种很难解释的状态：设置页里快捷键是空的、关闭行为是默认的，
+    // 但那个热键**仍然生效**、关闭窗口**仍然缩到托盘** —— 因为这两件事的实际效果
+    // 由系统和我们内存里的缓存决定，不是由数据库决定的。
+    // 用户会说「我明明重置了」。
+    let previous_shortcut = state.db.get_settings().map(|s| s.shortcut.toggle_window);
     blocking(move || {
         // 先清数据再清凭据：中途失败时，宁可留下一个「多余的 Key」（用户能再点一次清除），
         // 也不要出现「会话没了但 Key 还在」这种更难解释的状态
@@ -280,7 +291,18 @@ pub async fn reset_all_data(state: State<'_, AppState>) -> Result<(), String> {
         secrets.delete()?;
         Ok(())
     })
-    .await
+    .await?;
+
+    // 撤销系统层面的副作用，让实际行为和「已重置」一致
+    if let Ok(previous) = previous_shortcut {
+        crate::shortcut::apply(&app, &previous, None);
+    }
+    let defaults = crate::models::AppSettings::default();
+    state
+        .window
+        .set_close_to_tray(defaults.window.close_to_tray);
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +392,7 @@ pub async fn platform_capabilities(state: State<'_, AppState>) -> Result<Vec<Str
 /// 前端在「隐藏」之后就不再需要结果了，所以这里只做动作、不返回窗口状态。
 #[tauri::command]
 pub async fn hide_to_tray(app: AppHandle) -> Result<(), String> {
-    crate::tray::hide_main_window(&app);
+    crate::window::hide_main_window(&app);
     Ok(())
 }
 
@@ -443,4 +465,61 @@ pub async fn autostart_status(app: AppHandle) -> Result<AutostartStatus, String>
 #[tauri::command]
 pub async fn set_autostart(app: AppHandle, enabled: bool) -> Result<OperationResult, String> {
     Ok(crate::autostart::set_enabled(&app, enabled))
+}
+
+// ---------------------------------------------------------------------------
+// 全局快捷键（阶段 C）
+// ---------------------------------------------------------------------------
+
+/// 读取全局快捷键的状态：用户设的是什么、到底有没有注册上。
+///
+/// 两件事要分开看 —— 键被别的程序占着的时候，设置里存着 `Ctrl+Shift+Space`
+/// 而它其实没生效。界面必须能同时看到这两点。
+#[tauri::command]
+pub async fn global_shortcut_status(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<GlobalShortcutStatus, String> {
+    let db = state.db.clone();
+    let settings = blocking(move || db.get_settings()).await?;
+    Ok(crate::shortcut::status(
+        &app,
+        &settings.shortcut.toggle_window,
+    ))
+}
+
+/// 设置全局快捷键。`accelerator` 传 null 或空串表示关闭。
+///
+/// **只有注册成功才落盘。** 注册失败还存下来的话，下次启动会拿同一个注定失败的键
+/// 再试一遍，用户就会一直看到一个用不了的快捷键，而且不知道问题出在哪。
+#[tauri::command]
+pub async fn set_global_shortcut(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    accelerator: Option<String>,
+) -> Result<OperationResult, String> {
+    let db = state.db.clone();
+    let settings = blocking({
+        let db = db.clone();
+        move || db.get_settings()
+    })
+    .await?;
+
+    let outcome = crate::shortcut::apply(
+        &app,
+        &settings.shortcut.toggle_window,
+        accelerator.as_deref(),
+    );
+
+    if outcome.ok {
+        let stored = accelerator.unwrap_or_default().trim().to_string();
+        blocking(move || {
+            db.save_shortcut_settings(&ShortcutSettings {
+                toggle_window: stored,
+            })
+        })
+        .await?;
+    }
+
+    Ok(outcome)
 }

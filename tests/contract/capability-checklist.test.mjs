@@ -61,6 +61,13 @@ const CAPABILITY_CHECKLIST = [
     rustModules: ['src-tauri/src/autostart.rs'],
     rustPlugins: ['tauri_plugin_autostart::init('],
   },
+  {
+    id: 'global-shortcut',
+    desktopImplemented: true,
+    desktopCommands: ['platform_capabilities', 'global_shortcut_status', 'set_global_shortcut'],
+    rustModules: ['src-tauri/src/shortcut.rs'],
+    rustPlugins: ['tauri_plugin_global_shortcut::Builder::new()'],
+  },
   { id: 'file-read', desktopImplemented: false, desktopCommands: [], rustModules: [] },
   { id: 'screenshot', desktopImplemented: false, desktopCommands: [], rustModules: [] },
 ];
@@ -276,6 +283,24 @@ test('托盘可用性是 Rust 运行时判断的，不是写死的', () => {
     read('src-tauri/src/window.rs'),
     /tray_available:\s*AtomicBool::new\(false\)/,
     '托盘可用性必须默认 false —— 反过来会出现「藏了窗口却找不到入口」的窗口期'
+  );
+});
+
+test('重置本地数据要顺手撤销系统层面的副作用', () => {
+  const resetBlock = /pub async fn reset_all_data[\s\S]*?\n\}/.exec(rustCommands);
+  assert.ok(resetBlock, '未能找到 reset_all_data');
+
+  // 快捷键和关闭行为都存了「界面看不出来、但实际生效」的系统状态。
+  // 只清数据库不撤这些，用户会看到「设置里明明是空的，可那个键还在起作用」。
+  assert.match(
+    resetBlock[0],
+    /shortcut::apply\(/,
+    '重置时必须把已注册的全局快捷键撤销掉'
+  );
+  assert.match(
+    resetBlock[0],
+    /set_close_to_tray\(/,
+    '重置时必须把关闭行为的内存缓存恢复成默认值'
   );
 });
 

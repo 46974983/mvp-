@@ -18,6 +18,7 @@ export {
 } from './types';
 export type {
   AutostartStatus,
+  GlobalShortcutStatus,
   NotificationOutcome,
   NotificationRequest,
   PlatformCapability,

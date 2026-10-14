@@ -9,6 +9,10 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use tauri::{AppHandle, Manager};
+
+use crate::MAIN_WINDOW_LABEL;
+
 /// 用户按下窗口关闭按钮时，应该发生什么
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseAction {
@@ -85,6 +89,64 @@ impl WindowRuntime {
 
     pub fn set_close_to_tray(&self, enabled: bool) {
         self.close_to_tray.store(enabled, Ordering::Relaxed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 窗口的显示 / 隐藏
+//
+// 托盘菜单和全局快捷键都要做同样两件事，所以放在这里一处实现。
+// 分开写的话，有一边忘了 unminimize 或 set_focus，表现就是「点了没反应」。
+// ---------------------------------------------------------------------------
+
+/// 把主窗口显示出来并置于前台。
+///
+/// 三个动作缺一不可：只 `show()` 的话，窗口可能还停在最小化状态、
+/// 或者显示出来了却压在别的窗口后面 —— 用户看到的就是「点了没反应」。
+pub fn show_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        log::warn!("找不到主窗口，无法显示");
+        return;
+    };
+
+    if let Err(error) = window.show() {
+        log::warn!("显示窗口失败：{error}");
+        return;
+    }
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
+pub fn hide_main_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        log::warn!("找不到主窗口，无法隐藏");
+        return;
+    };
+    if let Err(error) = window.hide() {
+        log::warn!("隐藏窗口失败：{error}");
+    }
+}
+
+/// 主窗口是否正被用户看着（可见**且**聚焦）。
+///
+/// 取不到窗口或查询失败一律按「没在看」处理 —— 失败方向选「当成没在看」，
+/// 这样最多是多重画一次窗口，而不是点了快捷键毫无反应。
+pub fn is_main_window_in_use(app: &AppHandle) -> bool {
+    match app.get_webview_window(MAIN_WINDOW_LABEL) {
+        Some(window) => {
+            window.is_visible().unwrap_or(false) && window.is_focused().unwrap_or(false)
+        }
+        None => false,
+    }
+}
+
+/// 切换主窗口的显示状态。
+/// 用户正看着它 → 收起来；否则 → 叫到前台。
+pub fn toggle_main_window(app: &AppHandle) {
+    if is_main_window_in_use(app) {
+        hide_main_window(app);
+    } else {
+        show_main_window(app);
     }
 }
 

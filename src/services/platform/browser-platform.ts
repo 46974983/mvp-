@@ -14,6 +14,7 @@
 import {
   UnsupportedCapabilityError,
   type AutostartStatus,
+  type GlobalShortcutStatus,
   type NotificationOutcome,
   type NotificationRequest,
   type PlatformCapability,
@@ -119,6 +120,16 @@ export function createBrowserPlatformService(): PlatformService {
 
     async setAutostart() {
       unsupported('autostart');
+    },
+
+    async globalShortcutStatus(): Promise<GlobalShortcutStatus> {
+      // 浏览器里没有「全局快捷键」这回事：网页拿不到页面之外的按键。
+      // 如实返回空状态，不抛错 —— 界面会先看能力集合。
+      return { accelerator: '', registered: false };
+    },
+
+    async setGlobalShortcut() {
+      unsupported('global-shortcut');
     },
   };
 }

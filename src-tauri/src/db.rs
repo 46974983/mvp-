@@ -20,7 +20,8 @@ use crate::error::{AppError, AppResult};
 use crate::models::{
     AppSettings, AppendMessageInput, Conversation, CreateConversationInput,
     DEFAULT_CONVERSATION_TITLE, Message, MessagePatch, NotificationSettings, PersistedModelConfig,
-    PersonaConfig, StorageLocation, WindowSettings, derive_title_from_message, normalize_title,
+    PersonaConfig, ShortcutSettings, StorageLocation, WindowSettings, derive_title_from_message,
+    normalize_title,
 };
 
 /// 迁移脚本按版本号排列，只增不改：已经跑过的版本在用户机器上不会再跑一次。
@@ -448,6 +449,10 @@ impl Database {
                 .map(|value| parse_bool(&value, defaults.notification.on_reply_complete))
                 .unwrap_or(defaults.notification.on_reply_complete),
             },
+            shortcut: ShortcutSettings {
+                toggle_window: lookup(crate::models::setting_keys::SHORTCUT_TOGGLE_WINDOW)
+                    .unwrap_or(defaults.shortcut.toggle_window),
+            },
         })
     }
 
@@ -503,6 +508,14 @@ impl Database {
             } else {
                 "false"
             },
+        )])
+    }
+
+    /// 写全局快捷键偏好
+    pub fn save_shortcut_settings(&self, shortcut: &ShortcutSettings) -> AppResult<()> {
+        self.write_settings(&[(
+            crate::models::setting_keys::SHORTCUT_TOGGLE_WINDOW,
+            shortcut.toggle_window.trim(),
         )])
     }
 
@@ -570,6 +583,7 @@ fn map_message(row: &Row<'_>) -> rusqlite::Result<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::DEFAULT_GLOBAL_SHORTCUT;
 
     fn database() -> Database {
         Database::open_in_memory().expect("内存库应该能打开")
@@ -993,6 +1007,77 @@ mod tests {
                 .unwrap()
                 .notification
                 .on_reply_complete
+        );
+    }
+
+    #[test]
+    fn global_shortcut_defaults_to_unset() {
+        // 抢全系统唯一键位的事，必须由用户主动选择
+        let database = database();
+        assert_eq!(
+            database.get_settings().unwrap().shortcut.toggle_window,
+            DEFAULT_GLOBAL_SHORTCUT
+        );
+        assert!(DEFAULT_GLOBAL_SHORTCUT.is_empty());
+    }
+
+    #[test]
+    fn shortcut_settings_round_trip_and_trim() {
+        let database = database();
+
+        database
+            .save_shortcut_settings(&ShortcutSettings {
+                toggle_window: "  CommandOrControl+Shift+Space  ".to_string(),
+            })
+            .unwrap();
+
+        let settings = database.get_settings().unwrap();
+        // 存进去要顺手去掉空白，否则下次用这个串去注册会失败
+        assert_eq!(
+            settings.shortcut.toggle_window,
+            "CommandOrControl+Shift+Space"
+        );
+    }
+
+    #[test]
+    fn clearing_the_shortcut_persists_as_empty() {
+        let database = database();
+        database
+            .save_shortcut_settings(&ShortcutSettings {
+                toggle_window: "Ctrl+Alt+K".to_string(),
+            })
+            .unwrap();
+
+        database
+            .save_shortcut_settings(&ShortcutSettings {
+                toggle_window: String::new(),
+            })
+            .unwrap();
+
+        assert!(
+            database
+                .get_settings()
+                .unwrap()
+                .shortcut
+                .toggle_window
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reset_restores_the_shortcut_default() {
+        let database = database();
+        database
+            .save_shortcut_settings(&ShortcutSettings {
+                toggle_window: "Ctrl+Alt+K".to_string(),
+            })
+            .unwrap();
+
+        database.reset_all().unwrap();
+
+        assert_eq!(
+            database.get_settings().unwrap().shortcut.toggle_window,
+            DEFAULT_GLOBAL_SHORTCUT
         );
     }
 

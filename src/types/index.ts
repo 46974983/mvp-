@@ -11,6 +11,7 @@ export type {
   NotificationSettings,
   OperationResult,
   PersonaConfig,
+  ShortcutSettings,
   StorageLocation,
   StreamOutcome,
   StreamResult,

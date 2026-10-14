@@ -22,6 +22,7 @@ export const PLATFORM_CAPABILITIES = [
   'tray',
   'notification',
   'autostart',
+  'global-shortcut',
   'file-read',
   'screenshot',
 ] as const;
@@ -59,6 +60,12 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   autostart: {
     label: '开机自启',
     description: '登录系统后自动启动，注册的是当前这个可执行文件的路径',
+    plannedStage: 'C',
+    desktopImplemented: true,
+  },
+  'global-shortcut': {
+    label: '全局快捷键',
+    description: '在任何程序里按一下就能唤起或收起主窗口',
     plannedStage: 'C',
     desktopImplemented: true,
   },
@@ -104,6 +111,21 @@ export interface AutostartStatus {
    * 开发模式下尤其要注意，那时注册的是 target/debug 下的路径。
    */
   exePath: string;
+}
+
+/**
+ * 全局快捷键的当前状态。
+ *
+ * `accelerator` 是用户设的值，`registered` 是**运行期的事实**。
+ * 两者必须分开看：那个组合键可能已经被别的程序占了，注册没成功 ——
+ * 界面上要能同时显示「你设的是这个」和「它现在没生效」，
+ * 否则用户只会觉得「按了没反应」。
+ */
+export interface GlobalShortcutStatus {
+  /** 用户设置的组合键，空串表示没设 */
+  accelerator: string;
+  /** 这个组合键当前是否真的注册成功 */
+  registered: boolean;
 }
 
 /** 一条要发出去的通知 */
@@ -202,4 +224,19 @@ export interface PlatformService {
    * 界面需要说清是哪种失败，而不是笼统地弹一个「操作失败」。
    */
   setAutostart(enabled: boolean): Promise<OperationResult>;
+
+  /**
+   * 查询全局快捷键的状态。
+   *
+   * 查询类方法在不支持的环境里返回事实（空串、未注册），而不是抛错。
+   */
+  globalShortcutStatus(): Promise<GlobalShortcutStatus>;
+
+  /**
+   * 设置全局快捷键；传 `null` 表示关闭。
+   *
+   * 返回结果而不是 void：这个组合键可能已被别的程序占用，
+   * 那是**最需要讲清楚**的一种失败 —— 用户对「按了没反应」没有任何排查手段。
+   */
+  setGlobalShortcut(accelerator: string | null): Promise<OperationResult>;
 }
