@@ -1,13 +1,14 @@
 /**
- * 浏览器平台实现（阶段 A）
+ * 浏览器平台实现
  * ----------------------------------------------------------------------------
- * 只有「通知」是真能力，其余一律抛 UnsupportedCapabilityError —— 不静默失败，
- * 也不返回假数据。capabilities 集合是运行时算出来的，界面可以直接拿它来禁用按钮，
- * 而不是靠硬编码「阶段 A 所以不能用」。
+ * 浏览器里没有系统托盘、没有开机自启、没有本地文件系统。
  *
- * 想知道阶段 B 长什么样：把这个文件替换成 TauriPlatformService，
- * 用 invoke() 调用 Rust 侧的窄命令，capabilities 从 tauri.conf.json 的
- * capabilities 配置反推。接口不变。
+ * 所以这里的原则是**如实回答**，而不是「尽量模拟」：
+ *   - 查询类方法（isCloseToTrayEnabled）返回事实：关掉标签页就是关掉，所以是 false；
+ *   - 动作类方法（hideToTray / readFile / ...）抛 UnsupportedCapabilityError，
+ *     让界面能明确显示「当前环境不支持」，而不是静默什么都不做。
+ *
+ * 唯一的真能力是系统通知（用的是 Web Notification API）。
  */
 
 import {
@@ -27,37 +28,50 @@ function resolveNotificationApi(): NotificationApi | null {
 }
 
 export function createBrowserPlatformService(): PlatformService {
-  const notificationApi = resolveNotificationApi();
+  function unsupported(capability: PlatformCapability): never {
+    throw new UnsupportedCapabilityError(capability);
+  }
 
-  const capabilities = new Set<PlatformCapability>();
-  if (notificationApi) capabilities.add('notification');
-
-  async function ensure(capability: PlatformCapability): Promise<void> {
-    if (!capabilities.has(capability)) throw new UnsupportedCapabilityError(capability);
+  async function probeCapabilities(): Promise<ReadonlySet<PlatformCapability>> {
+    const capabilities = new Set<PlatformCapability>();
+    // 通知能力取决于浏览器有没有 Notification，所以每次探测都重新看一眼
+    if (resolveNotificationApi()) capabilities.add('notification');
+    return capabilities;
   }
 
   return {
     id: 'browser',
-    capabilities,
 
-    supports(capability) {
-      return capabilities.has(capability);
+    probeCapabilities,
+
+    window: {
+      async hideToTray() {
+        // 浏览器里没有托盘可藏。假装成功会让用户以为窗口会回来。
+        unsupported('tray');
+      },
+
+      async isCloseToTrayEnabled() {
+        // 这不是「不支持」，而是事实：关掉标签页就是关掉了。
+        // 查询类方法报错只会逼调用方写一层没意义的 try。
+        return false;
+      },
+
+      async setCloseToTray() {
+        unsupported('tray');
+      },
     },
 
     async readFile() {
-      await ensure('file-read');
-      throw new UnsupportedCapabilityError('file-read');
+      unsupported('file-read');
     },
 
     async takeScreenshot() {
-      await ensure('screenshot');
-      throw new UnsupportedCapabilityError('screenshot');
+      unsupported('screenshot');
     },
 
     async showNotification(text: string) {
-      await ensure('notification');
-      const api = notificationApi;
-      if (!api) throw new UnsupportedCapabilityError('notification');
+      const api = resolveNotificationApi();
+      if (!api) unsupported('notification');
 
       let permission = api.permission;
       if (permission === 'default') {
@@ -73,8 +87,7 @@ export function createBrowserPlatformService(): PlatformService {
     },
 
     async setAutostart() {
-      await ensure('autostart');
-      throw new UnsupportedCapabilityError('autostart');
+      unsupported('autostart');
     },
   };
 }

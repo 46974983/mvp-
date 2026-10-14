@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { createSettingsStore, DEFAULT_MODEL_CONFIG } from '@/features/settings/store';
-import { createBrowserStorage, DEFAULT_PERSONA } from '@/services/storage';
+import {
+  createBrowserStorage,
+  DEFAULT_CLOSE_TO_TRAY,
+  DEFAULT_PERSONA,
+} from '@/services/storage';
+import {
+  createBrowserPlatformService,
+  type PlatformCapability,
+  type PlatformService,
+} from '@/services/platform';
 import {
   createInstantProvider,
   createMemoryStorage,
@@ -8,11 +17,12 @@ import {
   VALID_MODEL_CONFIG,
 } from './helpers';
 
-function setup() {
+function setup(platform?: PlatformService) {
   const webStorage = createMemoryStorage();
   const services = createTestServices({
     storage: createBrowserStorage(webStorage),
     model: createInstantProvider(),
+    ...(platform ? { platform } : {}),
   });
 
   return { webStorage, store: createSettingsStore(services) };
@@ -157,5 +167,105 @@ describe('重置数据', () => {
 
     expect(webStorage.raw()).toEqual({});
     expect(store.getState().settings.persona.assistantName).toBe(DEFAULT_PERSONA.assistantName);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 托盘与窗口（阶段 C）
+// ---------------------------------------------------------------------------
+
+/**
+ * 造一个「声称有托盘」的平台实现。
+ * 用它验证成功路径 —— 浏览器环境下这两条链路永远不会成功，
+ * 只测失败路径的话，成功路径会一直是没跑过的代码。
+ */
+function createTrayCapablePlatform() {
+  const base = createBrowserPlatformService();
+  const calls: string[] = [];
+  let closeToTray = true;
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-tray',
+    probeCapabilities: async () => new Set<PlatformCapability>(['tray']),
+    window: {
+      ...base.window,
+      hideToTray: async () => {
+        calls.push('hide');
+      },
+      isCloseToTrayEnabled: async () => closeToTray,
+      setCloseToTray: async (enabled: boolean) => {
+        closeToTray = enabled;
+        calls.push(`set:${enabled}`);
+      },
+    },
+  };
+
+  return { platform, calls, current: () => closeToTray };
+}
+
+describe('托盘与窗口设置', () => {
+  it('默认开启「关闭窗口时缩到托盘」', () => {
+    const { store } = setup();
+    expect(store.getState().closeToTray).toBe(DEFAULT_CLOSE_TO_TRAY);
+    expect(DEFAULT_CLOSE_TO_TRAY).toBe(true);
+  });
+
+  it('浏览器模式探测不到托盘能力', async () => {
+    const { store } = setup();
+    await store.getState().load();
+    expect(store.getState().platformCapabilities).not.toContain('tray');
+  });
+
+  it('环境不支持时，修改关闭行为返回失败而不是静默成功', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    const result = await store.getState().setCloseToTray(false);
+
+    expect(result.ok).toBe(false);
+    expect(result.message.length).toBeGreaterThan(0);
+    // 状态不能跟着变 —— 「点了但没生效」比「不让点」更糟
+    expect(store.getState().closeToTray).toBe(DEFAULT_CLOSE_TO_TRAY);
+  });
+
+  it('环境不支持时，隐藏到托盘返回失败', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    const result = await store.getState().hideToTray();
+
+    expect(result.ok).toBe(false);
+    expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it('有托盘能力时：能探测到、能切换、能隐藏', async () => {
+    const { platform, calls, current } = createTrayCapablePlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    expect(store.getState().platformCapabilities).toContain('tray');
+
+    const toggled = await store.getState().setCloseToTray(false);
+    expect(toggled.ok).toBe(true);
+    expect(current()).toBe(false);
+    expect(store.getState().closeToTray).toBe(false);
+    // 内存里的设置结构要同步，否则设置页重渲染会跳回旧值
+    expect(store.getState().settings.window.closeToTray).toBe(false);
+
+    const hidden = await store.getState().hideToTray();
+    expect(hidden.ok).toBe(true);
+    expect(calls).toEqual(['set:false', 'hide']);
+  });
+
+  it('重置数据会把关闭行为恢复到默认值', async () => {
+    const { platform } = createTrayCapablePlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().setCloseToTray(false);
+
+    await store.getState().resetAll();
+
+    expect(store.getState().closeToTray).toBe(DEFAULT_CLOSE_TO_TRAY);
   });
 });

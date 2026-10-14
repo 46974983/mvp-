@@ -11,8 +11,17 @@ import type { PlatformService } from './types';
 
 export { createBrowserPlatformService } from './browser-platform';
 export { createTauriPlatformService } from './tauri-platform';
-export { PLATFORM_CAPABILITIES, UnsupportedCapabilityError } from './types';
-export type { PlatformCapability, PlatformService } from './types';
+export {
+  PLATFORM_CAPABILITIES,
+  PLATFORM_CAPABILITY_SPECS,
+  UnsupportedCapabilityError,
+} from './types';
+export type {
+  PlatformCapability,
+  PlatformCapabilitySpec,
+  PlatformService,
+  WindowController,
+} from './types';
 
 export function createPlatformService(): PlatformService {
   if (isTauriRuntime()) return createTauriPlatformService();

@@ -1,4 +1,4 @@
-//! 桌面外壳（阶段 B）
+//! 桌面外壳（阶段 B / C）
 //!
 //! 技术方案第 3 节的分层在这里收口：
 //!
@@ -10,10 +10,11 @@
 //!   ├── SQLite 数据访问        (db)
 //!   ├── API Key 加密存储        (secrets)
 //!   ├── 模型请求与流式事件       (chat)
+//!   ├── 系统托盘与窗口开关       (tray / window)
 //!   └── 窄命令接口              (commands)
 //! ```
 //!
-//! 这个文件只做三件事：开数据库、装状态、注册命令。
+//! 这个文件只做四件事：开数据库、装状态、建托盘、注册命令与窗口事件。
 //! 具体逻辑都在各自模块里，是为了让「外壳」看起来就是外壳 ——
 //! 想查什么能力被开放了，看 `invoke_handler` 那一份清单就够了。
 
@@ -24,6 +25,8 @@ mod error;
 mod models;
 mod redact;
 mod secrets;
+mod tray;
+mod window;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -33,6 +36,7 @@ use tauri::Manager;
 use crate::commands::AppState;
 use crate::db::Database;
 use crate::secrets::SecretStore;
+use crate::window::WindowRuntime;
 
 /// 数据库文件名。放在系统给的应用数据目录下，而不是应用安装目录 ——
 /// 后者在 Program Files 里通常没有写权限。
@@ -54,12 +58,52 @@ pub fn run() {
             // 「日志里没有秘密」这条得靠写日志时的不写，而不是靠脱敏的运气
             log::info!("本地数据库就绪：{}", database.location().database_path);
 
+            // 关闭行为要用到这个设置，所以启动时读一次，缓存进内存
+            let settings = database.get_settings()?;
+
             app.manage(AppState {
                 db: database,
                 secrets: SecretStore::new(),
                 cancel: Arc::new(AtomicBool::new(false)),
+                window: WindowRuntime::new(settings.window.close_to_tray),
             });
+
+            // 托盘必须在 state 之后建：菜单里的「退出」要能改 state
+            let tray_available = tray::build(app.handle());
+            app.state::<AppState>()
+                .window
+                .set_tray_available(tray_available);
+
+            if !tray_available {
+                log::warn!("托盘不可用：关闭窗口将直接退出（藏起来会让应用失联）");
+            }
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+
+            let state = window.state::<AppState>();
+            let action = crate::window::decide_close_action(
+                state.window.is_quitting(),
+                state.window.close_to_tray(),
+                state.window.tray_available(),
+            );
+
+            if action == crate::window::CloseAction::HideToTray {
+                // 拦下这次关闭，改成隐藏。
+                // 注意不是 minimize()：最小化还占着任务栏，用户会以为应用还开着；
+                // 隐藏才是真正的「退到托盘」。
+                api.prevent_close();
+                match window.hide() {
+                    Ok(()) => log::info!("窗口已隐藏到托盘"),
+                    // 隐藏失败时窗口保持原样 —— 这是安全的失败方向：
+                    // 用户看得见窗口，总比窗口不见了、又找不到托盘入口强
+                    Err(error) => log::warn!("隐藏窗口失败：{error}"),
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // 数据位置
@@ -90,6 +134,11 @@ pub fn run() {
             commands::test_connection,
             commands::stream_chat,
             commands::cancel_chat,
+            // 平台能力与窗口（阶段 C）
+            commands::platform_capabilities,
+            commands::hide_to_tray,
+            commands::close_to_tray_enabled,
+            commands::set_close_to_tray,
         ])
         .run(tauri::generate_context!())
         .expect("启动桌面应用失败");

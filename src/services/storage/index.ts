@@ -13,6 +13,7 @@ import type { StorageService } from './types';
 
 export {
   createBrowserStorage,
+  DEFAULT_CLOSE_TO_TRAY,
   DEFAULT_CONVERSATION_TITLE,
   DEFAULT_MODEL_ENDPOINT,
   DEFAULT_PERSONA,

@@ -24,6 +24,14 @@ pub const DEFAULT_SYSTEM_PROMPT: &str =
 pub const DEFAULT_API_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL_NAME: &str = "gpt-4o-mini";
 
+/// 「关闭窗口时缩到托盘」的默认值。
+///
+/// 选 true 是产品判断，不是随手取的：这是个常驻型助手（阶段 C 之后还会有开机自启、
+/// 全局快捷键），用户关掉窗口多半是想让它退到后台，而不是想让进程消失。
+/// 代价是「关不掉的窗口」很容易被误解，所以界面上必须写清楚怎么真正退出，
+/// 而且托盘必须在应用运行的整个期间都在。
+pub const DEFAULT_CLOSE_TO_TRAY: bool = true;
+
 /// 去掉首尾空白；全空白则回退到「未命名会话」
 pub fn normalize_title(title: &str) -> String {
     let trimmed = title.trim();
@@ -56,6 +64,7 @@ pub mod setting_keys {
     pub const PERSONA_SYSTEM_PROMPT: &str = "persona.system_prompt";
     pub const MODEL_API_URL: &str = "model.api_url";
     pub const MODEL_NAME: &str = "model.model_name";
+    pub const WINDOW_CLOSE_TO_TRAY: &str = "window.close_to_tray";
 }
 
 // ---------------------------------------------------------------------------
@@ -107,12 +116,29 @@ pub struct PersistedModelConfig {
     pub model_name: String,
 }
 
+/// 窗口与托盘相关的偏好（非敏感，进 settings 表）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowSettings {
+    /// 关闭主窗口时缩到托盘，而不是退出应用
+    pub close_to_tray: bool,
+}
+
+impl Default for WindowSettings {
+    fn default() -> Self {
+        Self {
+            close_to_tray: DEFAULT_CLOSE_TO_TRAY,
+        }
+    }
+}
+
 /// 全部可持久化的应用设置
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub persona: PersonaConfig,
     pub model: PersistedModelConfig,
+    pub window: WindowSettings,
 }
 
 impl Default for AppSettings {
@@ -127,6 +153,7 @@ impl Default for AppSettings {
                 api_url: DEFAULT_API_URL.to_string(),
                 model_name: DEFAULT_MODEL_NAME.to_string(),
             },
+            window: WindowSettings::default(),
         }
     }
 }

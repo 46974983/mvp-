@@ -64,11 +64,29 @@ export interface PersistedModelConfig {
   modelName: string;
 }
 
+/**
+ * 窗口与托盘相关的偏好（非敏感，进 settings 表）
+ *
+ * 浏览器模式里这条设置没有意义（没有托盘可缩），但仍然存在 ——
+ * 让设置结构在两种环境下保持一致，比让它随环境变形要省事得多。
+ */
+export interface WindowSettings {
+  /**
+   * 关闭主窗口时缩到系统托盘，而不是退出应用。
+   *
+   * 默认 true 是产品判断：这是个常驻型助手，用户关掉窗口多半是想让它退到后台。
+   * 代价是「窗口关不掉」很容易被误解，所以界面上必须写清怎么真正退出。
+   */
+  closeToTray: boolean;
+}
+
 /** 全部可持久化的应用设置 */
 export interface AppSettings {
   persona: PersonaConfig;
   /** 模型配置的非敏感投影（地址与模型名）。产品设计 3.2 要求「保存本地配置」。 */
   model: PersistedModelConfig;
+  /** 窗口与托盘偏好 */
+  window: WindowSettings;
 }
 
 /** 主题模式 */

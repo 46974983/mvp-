@@ -1,7 +1,10 @@
 # 桌面 AI 助手
 
 按《[PRODUCT_DESIGN.md](./PRODUCT_DESIGN.md)》和《[docs/TECHNICAL_PLAN.md](./docs/TECHNICAL_PLAN.md)》
-实现的 Windows 桌面 AI 助手。**阶段 A（浏览器可运行 MVP）与阶段 B（Tauri 基础接入）均已完成。**
+实现的 Windows 桌面 AI 助手。
+
+**进度：阶段 A（浏览器可运行 MVP）、阶段 B（Tauri 基础接入）已完成；
+阶段 C 已做完第一步「系统托盘 + 窗口隐藏/恢复」。**
 
 ```text
 配置模型 → 流式聊天 → 会话本地保存 → 关掉 → 再打开 → 历史还在
@@ -15,6 +18,8 @@
 | 会话数据 | 浏览器 localStorage | **SQLite**，应用数据目录 |
 | API Key | 只留内存，刷新即失效 | **Windows 凭据管理器**加密保管 |
 | 网络出口 | 无 | 只在 Rust 侧，WebView 无外网权限 |
+| 关闭窗口 | 关掉标签页就是关掉 | 默认**缩到系统托盘**，可关 |
+| 系统托盘 | 没有（界面如实说明） | 有：显示 / 隐藏 / 退出 |
 | 用途 | 开发、跑测试、看界面 | 日常使用 |
 
 浏览器模式**至今**仍然是离线实现，这不是没做完 —— 见下面「为什么浏览器模式不接真模型」。
@@ -51,10 +56,10 @@ npm run test:all      # 全部
 
 | 套件 | 命令 | 结果 |
 | --- | --- | --- |
-| 契约 | `npm run test:contract` | **43 项** |
-| 单元 | `npm run test:unit` | **120 项 / 10 文件** |
-| Rust | `npm run test:rust` | **49 项** |
-| 端到端 | `npm run test:e2e` | **50 项检查**，全程无 JS 报错 |
+| 契约 | `npm run test:contract` | **61 项** |
+| 单元 | `npm run test:unit` | **133 项 / 10 文件** |
+| Rust | `npm run test:rust` | **62 项** |
+| 端到端 | `npm run test:e2e` | **54 项检查**，全程无 JS 报错 |
 
 Rust 侧的凭据测试会**真的读写 Windows 凭据管理器**（用独立的条目名，跑完即删）。
 
@@ -79,15 +84,17 @@ Rust 侧的凭据测试会**真的读写 Windows 凭据管理器**（用独立�
 │       └── container.ts                依赖组装
 ├── src-tauri/                          桌面外壳（Core）
 │   ├── migrations/0001_init.sql        三张表：conversations / messages / settings
-│   ├── capabilities/default.json       权限清单（只有 core:default）
+│   ├── capabilities/default.json       权限清单（仍然只有 core:default）
 │   └── src/
 │       ├── db.rs                       SQLite 连接、迁移、仓储
 │       ├── secrets.rs                  Windows 凭据管理器
 │       ├── chat.rs                     OpenAI 兼容请求 + SSE 流式 + 取消
+│       ├── tray.rs                     托盘图标与菜单（阶段 C）
+│       ├── window.rs                   窗口显示/隐藏与关闭判定（阶段 C）
 │       ├── commands.rs                 前端能碰到的全部能力
 │       ├── models.rs                   领域类型与领域规则
 │       ├── error.rs / redact.rs        统一错误 + 脱敏
-│       └── lib.rs                      开库、装状态、注册命令
+│       └── lib.rs                      开库、装状态、建托盘、注册命令
 └── tests/{contract,unit,e2e}
 ```
 
@@ -105,6 +112,44 @@ React 组件 → features(Zustand) → services(接口) → 适配器实现
 有测试强制这一点（`运行环境探测只有一个出处`）。
 
 组件层出现任何 `@/services` 或 `@tauri-apps` 的 import 都会直接红。
+
+## 托盘与窗口（阶段 C 第一步）
+
+「关掉窗口但程序还在跑」是桌面助手的常见设计，也是最容易被误解的设计 ——
+用户点完叉发现进程还在，第一反应是「这软件关不掉」。所以这一步的重点不是托盘本身，
+而是**不让用户被困住**：
+
+- 关闭窗口默认缩到托盘，但设置页有一个明确的开关可以关掉；
+- 托盘菜单同时有「显示主窗口」和「退出」—— 少任何一个，用户都会被困住；
+- 托盘可用性是 **Rust 运行时判断**的，不是前端写死的：托盘创建失败时
+  `decide_close_action` 会退回「关闭即退出」，而不是把窗口藏起来又找不到入口。
+
+关闭行为的判定被抽成纯函数（`src-tauri/src/window.rs`），三个输入两个结果，
+每个分支都有用例 —— 因为这个逻辑写错时的表现是「点了关闭但窗口没关」，
+没有任何报错，只会让用户觉得软件坏了。
+
+**托盘没有引入任何 Tauri 权限。** 它走的是 Tauri 核心的 tray API
+（`Cargo.toml` 里开 `tray-icon` feature），完全在 Rust 侧建立和响应；
+前端只多拿到 4 条自己的窄命令，`capabilities/default.json` 里仍然只有 `core:default`。
+这一点有契约测试盯着（`新增原生能力没有顺带放开任何 Tauri 权限`）。
+
+## 新增一种平台能力时，要同时补齐什么
+
+阶段 C 起会陆续引入 Tauri 插件和新能力。每加一项，**六件事必须一起做**，
+只加前端按钮是不算的：
+
+| | 要做的 | 谁来保证 |
+| --- | --- | --- |
+| 1 | Rust / Tauri 配置（feature 或插件、模块、命令） | `tests/contract/capability-checklist.test.mjs` |
+| 2 | capabilities 权限（而且不能顺带多放开） | 同上 |
+| 3 | `PlatformService` 接口 + 能力枚举 | 同上 |
+| 4 | 浏览器模式 fallback（明确抛错，不静默） | 同上 |
+| 5 | 单元 / 契约测试 | 同上 |
+| 6 | Windows 桌面构建验证（`tauri build --no-bundle`） | 人工 / CI |
+
+用法：先在 `tests/contract/capability-checklist.test.mjs` 的清单里补一行，
+再照着自己列的 `desktopCommands` / `rustModules` 去实现。
+漏了哪一步都会在 `npm run test:contract` 里红掉 —— 包括「实现完了但忘了改声明」。
 
 ## API Key 的旅程
 
@@ -169,17 +214,31 @@ connect-src ipc: http://ipc.localhost   ← 没有外网出口
    产品设计 3.2 要求「保存本地配置」，技术方案只禁止 Key 落盘。
 2. **阶段 A 的存储用 Web Storage，不在浏览器里跑 SQLite WASM。**
    `StorageService` 的接口按 SQL 操作命名，数据按三张表分开摆，阶段 B 照搬即可。
-3. **阶段 B 的 Rust 侧不引入任何 Tauri 插件**（除日志）。
+3. **Rust 侧至今没有引入任何 Tauri 插件**（除日志）。
    capabilities 只有 `core:default`，没有 fs / shell / http / dialog。
-   有契约测试比对权限清单与依赖清单。
+   托盘用的是核心的 `tray-icon` feature，不是插件，所以也没多开权限。
+   有契约测试同时比对权限清单与依赖清单。
 4. **设置页的文案全部来自服务层自述**，没有一句写死的。
    同一个界面要如实描述两种运行环境，硬编码文案必然在其中一种里撒谎。
 
-## 下一步（阶段 C）
+## 下一步（阶段 C 剩余部分）
 
-按技术方案第 8 节，阶段 C 是「桌面体验」：托盘、隐藏窗口、开机启动、全局快捷键、通知。
-这些能力会加在 `PlatformService` 上，并把 `capabilities/default.json` 逐项放开 ——
-目前 `src/services/platform/tauri-platform.ts` 的能力集合是**空的**，这是如实回答：
-问一次「能不能截屏」，答案就是不能。
+按技术方案第 6 节的顺序，阶段 C 还剩三项，每项都要走上面那张六件事的清单：
 
-阶段 D 才是文件读取、截屏、键鼠模拟；那些高权限能力需要先补齐权限说明与失败提示。
+1. **系统通知** —— 需要 `tauri-plugin-notification`，并放开通知权限。
+   注意它会第一次真正往 `capabilities/default.json` 里加东西。
+2. **开机自启** —— 需要 `tauri-plugin-autostart` + 权限，界面上给开关和失败提示。
+3. **全局快捷键** —— 需要 `tauri-plugin-global-shortcut` + 权限。
+   这一项要在界面上说明「哪些组合键被占用」，否则用户会以为是键盘坏了。
+
+阶段 D 才是文件读取、截屏、键鼠模拟。那些高权限能力按方案要求必须有
+明确的设置开关、失败提示和权限说明，**默认关闭**。
+
+## 已知缺口
+
+- **桌面模式没有自动化 UI 测试。** 跑 Tauri 窗口需要真实 GUI 会话，脚本无法无头执行。
+  窗口内行为的等价覆盖靠 Rust 单元测试（62 项）+ 环境切换与能力探测单元测试
+  + 桌面外壳契约测试。但「托盘图标真的出现了吗、双击真的能恢复窗口吗」
+  这类事只能人工验证一次。
+- **托盘没有在 CI 上验证过。** `tauri build --no-bundle` 只证明它能编译链接，
+  不证明它在真实桌面会话里行为正确。

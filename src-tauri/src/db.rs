@@ -20,7 +20,7 @@ use crate::error::{AppError, AppResult};
 use crate::models::{
     AppendMessageInput, AppSettings, Conversation, CreateConversationInput,
     DEFAULT_CONVERSATION_TITLE, Message, MessagePatch, PersistedModelConfig, PersonaConfig,
-    StorageLocation, derive_title_from_message, normalize_title,
+    StorageLocation, WindowSettings, derive_title_from_message, normalize_title,
 };
 
 /// 迁移脚本按版本号排列，只增不改：已经跑过的版本在用户机器上不会再跑一次。
@@ -36,6 +36,17 @@ pub fn now_ms() -> i64 {
 
 fn new_id(prefix: &str) -> String {
     format!("{prefix}_{}", Uuid::new_v4().simple())
+}
+
+/// 把设置值解析成布尔。
+/// 设置表存的是文本，任何不认识的写法都回退到默认值而不是报错 ——
+/// 用户不该因为数据库里多了一个手改的字符就打不开应用。
+pub fn parse_bool(value: &str, fallback: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => fallback,
+    }
 }
 
 #[derive(Clone)]
@@ -428,6 +439,11 @@ impl Database {
                 model_name: lookup(crate::models::setting_keys::MODEL_NAME)
                     .unwrap_or(defaults.model.model_name),
             },
+            window: WindowSettings {
+                close_to_tray: lookup(crate::models::setting_keys::WINDOW_CLOSE_TO_TRAY)
+                    .map(|value| parse_bool(&value, defaults.window.close_to_tray))
+                    .unwrap_or(defaults.window.close_to_tray),
+            },
         })
     }
 
@@ -445,6 +461,14 @@ impl Database {
             (crate::models::setting_keys::MODEL_API_URL, model.api_url.trim()),
             (crate::models::setting_keys::MODEL_NAME, model.model_name.trim()),
         ])
+    }
+
+    /// 写窗口与托盘的偏好
+    pub fn save_window_settings(&self, window: &WindowSettings) -> AppResult<()> {
+        self.write_settings(&[(
+            crate::models::setting_keys::WINDOW_CLOSE_TO_TRAY,
+            if window.close_to_tray { "true" } else { "false" },
+        )])
     }
 
     fn write_settings(&self, entries: &[(&str, &str)]) -> AppResult<()> {
@@ -758,6 +782,85 @@ mod tests {
         let settings = database.get_settings().unwrap();
         assert_eq!(settings.persona.assistant_name, "阿枢");
         assert_eq!(settings.model.api_url, "https://api.example.com/v1");
+    }
+
+    #[test]
+    fn parse_bool_accepts_common_spellings() {
+        assert!(parse_bool("true", false));
+        assert!(parse_bool(" TRUE ", false));
+        assert!(parse_bool("1", false));
+        assert!(parse_bool("on", false));
+        assert!(!parse_bool("false", true));
+        assert!(!parse_bool("0", true));
+        assert!(!parse_bool("off", true));
+    }
+
+    #[test]
+    fn parse_bool_falls_back_instead_of_failing() {
+        // 设置表里出现看不懂的值时不该打不开应用
+        assert!(parse_bool("随便写的", true));
+        assert!(!parse_bool("", false));
+    }
+
+    #[test]
+    fn close_to_tray_defaults_to_on() {
+        let database = database();
+        assert!(database.get_settings().unwrap().window.close_to_tray);
+    }
+
+    #[test]
+    fn window_settings_round_trip() {
+        let database = database();
+
+        database
+            .save_window_settings(&WindowSettings {
+                close_to_tray: false,
+            })
+            .unwrap();
+        assert!(!database.get_settings().unwrap().window.close_to_tray);
+
+        database
+            .save_window_settings(&WindowSettings {
+                close_to_tray: true,
+            })
+            .unwrap();
+        assert!(database.get_settings().unwrap().window.close_to_tray);
+    }
+
+    #[test]
+    fn saving_persona_does_not_disturb_window_settings() {
+        let database = database();
+        database
+            .save_window_settings(&WindowSettings {
+                close_to_tray: false,
+            })
+            .unwrap();
+
+        database
+            .save_persona(&PersonaConfig {
+                assistant_name: "阿枢".into(),
+                user_name: "老大".into(),
+                system_prompt: "先给结论。".into(),
+            })
+            .unwrap();
+
+        let settings = database.get_settings().unwrap();
+        assert_eq!(settings.persona.assistant_name, "阿枢");
+        assert!(!settings.window.close_to_tray);
+    }
+
+    #[test]
+    fn reset_restores_the_close_to_tray_default() {
+        let database = database();
+        database
+            .save_window_settings(&WindowSettings {
+                close_to_tray: false,
+            })
+            .unwrap();
+
+        database.reset_all().unwrap();
+
+        assert!(database.get_settings().unwrap().window.close_to_tray);
     }
 
     #[test]

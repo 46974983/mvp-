@@ -13,24 +13,27 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::chat::{self, ChatRequest, StreamEvent, StreamResult};
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::models::{
     AppSettings, AppendMessageInput, Conversation, CreateConversationInput, Message, MessagePatch,
-    ModelConfig, OperationResult, PersonaConfig, StorageLocation,
+    ModelConfig, OperationResult, PersonaConfig, StorageLocation, WindowSettings,
 };
 use crate::secrets::SecretStore;
+use crate::window::WindowRuntime;
 
-/// 应用运行期状态。三个字段就够：数据库、凭据存储、当前请求的取消标记。
+/// 应用运行期状态。四个字段就够：数据库、凭据存储、当前请求的取消标记、窗口开关。
 pub struct AppState {
     pub db: Database,
     pub secrets: SecretStore,
     /// 同一时刻只允许一个流式请求（前端也这么约束）。
     /// 用原子布尔而不是 CancellationToken：只需要一个「请停下」的旗子。
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// 「关闭窗口时缩到托盘」等窗口状态，兼作数据库的缓存
+    pub window: WindowRuntime,
 }
 
 /// 把阻塞的数据库操作挪到阻塞线程池，并把 `AppError` 翻成面向用户的字符串
@@ -172,12 +175,18 @@ pub async fn save_settings(
     settings: AppSettings,
 ) -> Result<(), String> {
     let db = state.db.clone();
+    let close_to_tray = settings.window.close_to_tray;
     blocking(move || {
         db.save_persona(&settings.persona)?;
         db.save_model_projection(&settings.model)?;
+        db.save_window_settings(&settings.window)?;
         Ok(())
     })
-    .await
+    .await?;
+
+    // 内存缓存同步跟上，否则关闭窗口时用的还是旧值
+    state.window.set_close_to_tray(close_to_tray);
+    Ok(())
 }
 
 #[tauri::command]
@@ -330,5 +339,59 @@ pub async fn stream_chat(
 #[tauri::command]
 pub fn cancel_chat(state: State<'_, AppState>) -> Result<(), String> {
     state.cancel.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 平台能力与窗口（阶段 C）
+// ---------------------------------------------------------------------------
+
+/// 当前**真正可用**的平台能力。
+///
+/// 关键点：这个清单由 Rust 在运行时回答，前端不写死一份。
+/// 「托盘到底建起来了没有」只有 Rust 知道 —— 前端若写死「托盘可用」，
+/// 一旦托盘创建失败，用户点「隐藏到托盘」就会让窗口消失且再也找不回来。
+#[tauri::command]
+pub async fn platform_capabilities(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let mut capabilities = Vec::new();
+    if state.window.tray_available() {
+        capabilities.push("tray".to_string());
+    }
+    Ok(capabilities)
+}
+
+/// 把主窗口隐藏到托盘。
+/// 前端在「隐藏」之后就不再需要结果了，所以这里只做动作、不返回窗口状态。
+#[tauri::command]
+pub async fn hide_to_tray(app: AppHandle) -> Result<(), String> {
+    crate::tray::hide_main_window(&app);
+    Ok(())
+}
+
+/// 读取「关闭窗口时缩到托盘」的当前值
+#[tauri::command]
+pub async fn close_to_tray_enabled(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.window.close_to_tray())
+}
+
+/// 修改「关闭窗口时缩到托盘」。
+///
+/// 必须同时做两件事：写库（下次启动仍然生效）和改内存缓存（这次关闭就生效）。
+/// 只做前者会出现「保存成功但按关闭还是退出」，只做后者会出现「这次生效、重启就丢」。
+#[tauri::command]
+pub async fn set_close_to_tray(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let db = state.db.clone();
+    blocking(move || {
+        db.save_window_settings(&WindowSettings {
+            close_to_tray: enabled,
+        })
+    })
+    .await?;
+
+    state.window.set_close_to_tray(enabled);
+    log::info!(
+        "关闭行为已更新：{}",
+        if enabled { "缩到托盘" } else { "退出应用" }
+    );
     Ok(())
 }

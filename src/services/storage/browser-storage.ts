@@ -55,10 +55,14 @@ export const DEFAULT_MODEL_ENDPOINT = {
   modelName: 'gpt-4o-mini',
 } as const;
 
+/** 「关闭窗口时缩到托盘」的默认值。与 Rust 侧 DEFAULT_CLOSE_TO_TRAY 保持一致。 */
+export const DEFAULT_CLOSE_TO_TRAY = true;
+
 export function defaultSettings(): AppSettings {
   return {
     persona: { ...DEFAULT_PERSONA },
     model: { ...DEFAULT_MODEL_ENDPOINT },
+    window: { closeToTray: DEFAULT_CLOSE_TO_TRAY },
   };
 }
 

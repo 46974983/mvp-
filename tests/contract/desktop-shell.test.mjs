@@ -41,6 +41,9 @@ test('src-tauri 的关键文件齐备', () => {
     'src-tauri/src/chat.rs',
     'src-tauri/src/error.rs',
     'src-tauri/src/redact.rs',
+    // 阶段 C：托盘与窗口
+    'src-tauri/src/tray.rs',
+    'src-tauri/src/window.rs',
   ];
 
   const missing = required.filter((file) => !exists(file));
@@ -108,13 +111,14 @@ test('前端的每个 Tauri 适配器都有对应的命令', () => {
   const adapters = [
     read('src/services/storage/tauri-storage.ts'),
     read('src/services/model/tauri-provider.ts'),
+    read('src/services/platform/tauri-platform.ts'),
   ].join('\n');
 
   const invoked = new Set(
     [...adapters.matchAll(/invoke(?:<[^>]*>)?\(\s*'([a-z_0-9]+)'/g)].map((match) => match[1])
   );
 
-  assert.ok(invoked.size >= 12, `前端调用的命令太少，只有 ${invoked.size} 个`);
+  assert.ok(invoked.size >= 15, `前端调用的命令太少，只有 ${invoked.size} 个`);
 
   for (const name of invoked) {
     assert.ok(
@@ -122,6 +126,23 @@ test('前端的每个 Tauri 适配器都有对应的命令', () => {
       `前端调用了 ${name}，但 commands.rs 里没有这个命令`
     );
   }
+});
+
+test('窗口关闭事件由 Rust 接管，且能区分「真退出」', () => {
+  const lib = read('src-tauri/src/lib.rs');
+
+  assert.match(lib, /on_window_event/, '窗口事件应在 Rust 侧接管');
+  assert.match(lib, /CloseRequested/, '应处理窗口关闭请求');
+  assert.match(lib, /prevent_close\(\)/, '需要拦下关闭才能改成隐藏');
+  assert.match(lib, /is_quitting\(\)/, '必须区分「用户点了退出」和「用户点了关闭」');
+});
+
+test('托盘菜单同时提供「显示」与「退出」', () => {
+  const tray = read('src-tauri/src/tray.rs');
+
+  // 少了任何一个，用户都会被困在一个看不见的进程里
+  assert.match(tray, /"显示主窗口"/, '托盘菜单必须有「显示主窗口」');
+  assert.match(tray, /"退出"/, '托盘菜单必须有「退出」');
 });
 
 test('package.json 暴露了桌面开发与构建入口', () => {

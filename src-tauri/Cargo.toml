@@ -1,7 +1,7 @@
 [package]
 name = "desktop-ai-assistant"
 version = "0.2.0"
-description = "桌面 AI 助手 —— Tauri 桌面外壳（阶段 B）"
+description = "桌面 AI 助手 —— Tauri 桌面外壳（阶段 B / C）"
 authors = ["desktop-ai-assistant"]
 license = "MIT"
 edition = "2024"
@@ -15,8 +15,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.7.2", features = [] }
 
 [dependencies]
-# 应用外壳
-tauri = { version = "2.12.3", features = [] }
+# 应用外壳。tray-icon 是 Tauri 的 feature 而不是插件：
+# 托盘属于核心能力，用 Rust 侧 API 建，不会给前端多开任何权限。
+tauri = { version = "2.12.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 
 # 序列化

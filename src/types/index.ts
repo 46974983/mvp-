@@ -14,4 +14,5 @@ export type {
   StreamOutcome,
   StreamResult,
   ThemeMode,
+  WindowSettings,
 } from './domain';

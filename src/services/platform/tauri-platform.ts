@@ -1,53 +1,75 @@
 /**
  * 桌面平台实现（Tauri）
  * ----------------------------------------------------------------------------
- * 能力集合目前是**空的**，这是如实回答，不是偷懒。
+ * 阶段 B 里这个实现的能力集合是空的，因为那时还没做原生能力。
+ * 阶段 C 起，能力一项项接上来 —— 但**不是在这里声明**，而是问 Rust：
+ * `platform_capabilities` 命令会如实回答「托盘到底建起来没有」。
  *
- * 技术方案第 6 节把原生能力排了顺序：
- *   1. SQLite、加密配置和模型请求   ← 本阶段已做（它们不走 PlatformService）
- *   2. 托盘、隐藏窗口、开机启动、全局快捷键
- *   3. 本地文件读取和路径权限
- *   4. 截屏
- *   5. 键鼠模拟和自动化
+ * 这一点很关键：如果这里写死 `new Set(['tray'])`，那么托盘创建失败时
+ * （图标缺失、系统限制……），前端仍然会显示「可用」，
+ * 用户一点「隐藏到托盘」，窗口就消失且再也找不回来。
  *
- * 第 2 项之后才轮到 PlatformService 上的这些能力，所以阶段 B 里它们都还没开。
- * 界面拿到空集合就会把对应入口标记成「未开放」，用户不会点了之后才发现不行。
- *
- * 阶段 C 的做法：把这里换成通过 `invoke` 调用 Rust 命令的实现，
- * capabilities/default.json 里再逐项放开对应权限。接口不用改。
+ * 托盘本身完全在 Rust 侧建立与响应，前端只多拿到四条窄命令，
+ * capabilities/default.json 里没有增加任何权限。
  */
 
-import type { PlatformCapability, PlatformService } from './types';
+import { invoke } from '@tauri-apps/api/core';
+
+import {
+  PLATFORM_CAPABILITIES,
+  UnsupportedCapabilityError,
+  type PlatformCapability,
+  type PlatformService,
+} from './types';
+
+const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set(PLATFORM_CAPABILITIES);
 
 export function createTauriPlatformService(): PlatformService {
-  const capabilities = new Set<PlatformCapability>();
+  function unsupported(capability: PlatformCapability): never {
+    throw new UnsupportedCapabilityError(capability);
+  }
 
-  function unsupported(capability: PlatformCapability) {
-    return new Error(`当前阶段尚未开放「${capability}」能力，它排在技术方案第 6 节的后续阶段。`);
+  async function probeCapabilities(): Promise<ReadonlySet<PlatformCapability>> {
+    const reported = await invoke<string[]>('platform_capabilities');
+    // 过滤一遍：只认本版本认识的名字。
+    // 这样以后 Rust 加了新能力、旧前端拿到不认识的名字也不会崩。
+    return new Set(
+      reported.filter((name): name is PlatformCapability => KNOWN_CAPABILITIES.has(name))
+    );
   }
 
   return {
     id: 'tauri',
-    capabilities,
 
-    supports(capability) {
-      return capabilities.has(capability);
+    probeCapabilities,
+
+    window: {
+      hideToTray: () => invoke<void>('hide_to_tray'),
+
+      // 这个值由 Rust 从内存缓存直接回答，不查库 ——
+      // 它是窗口关闭时要用的判断依据，必须和 Rust 侧看到的是同一份
+      isCloseToTrayEnabled: () => invoke<boolean>('close_to_tray_enabled'),
+
+      // 修改会同时写库和更新 Rust 的内存缓存，见 commands.rs 的说明
+      setCloseToTray: (enabled: boolean) => invoke<void>('set_close_to_tray', { enabled }),
     },
 
     async readFile() {
-      throw unsupported('file-read');
+      unsupported('file-read');
     },
 
     async takeScreenshot() {
-      throw unsupported('screenshot');
+      unsupported('screenshot');
     },
 
     async showNotification() {
-      throw unsupported('notification');
+      // 阶段 C 的后续步骤：需要引入 tauri-plugin-notification 并放开通知权限
+      unsupported('notification');
     },
 
     async setAutostart() {
-      throw unsupported('autostart');
+      // 阶段 C 的后续步骤：需要引入 tauri-plugin-autostart 并放开权限
+      unsupported('autostart');
     },
   };
 }

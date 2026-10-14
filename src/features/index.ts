@@ -29,3 +29,7 @@ export type { SettingsState } from './settings/store';
 // 在这里转一次手：组件只知道「有这么个 schema」，不知道它住哪一层。
 export { modelConfigSchema } from '@/services/model';
 export type { ModelConfigForm } from '@/services/model';
+
+// 能力清单同理：界面要读能力的名字和说明，但不该直接摸到服务层的实现目录。
+export { PLATFORM_CAPABILITIES, PLATFORM_CAPABILITY_SPECS } from '@/services/platform';
+export type { PlatformCapability, PlatformCapabilitySpec } from '@/services/platform';

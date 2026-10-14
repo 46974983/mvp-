@@ -18,10 +18,18 @@ interface TauriGlobals {
   __TAURI_INTERNALS__?: unknown;
 }
 
-function stubTauriRuntime(enabled: boolean): void {
+/**
+ * 植桩运行环境。
+ * `capabilities` 用来模拟 Rust 对 `platform_capabilities` 的回答 ——
+ * 桌面侧的能力集合是问出来的，不是写在 TS 里的，这个参数就是那条链路的开关。
+ */
+function stubTauriRuntime(enabled: boolean, capabilities: string[] = []): void {
   const globals = window as unknown as TauriGlobals;
   if (enabled) {
-    globals.__TAURI_INTERNALS__ = { invoke: () => Promise.resolve() };
+    globals.__TAURI_INTERNALS__ = {
+      invoke: (command: string) =>
+        Promise.resolve(command === 'platform_capabilities' ? capabilities : undefined),
+    };
   } else {
     delete globals.__TAURI_INTERNALS__;
   }
@@ -86,12 +94,31 @@ describe('桌面环境拿到的实现', () => {
     expect(provider.performsNetworkRequest).toBe(true);
   });
 
-  it('平台实现是 tauri，且阶段 B 不开放任何高权限能力', () => {
+  it('平台实现是 tauri', () => {
     stubTauriRuntime(true);
-    const platform = createPlatformService();
+    expect(createPlatformService().id).toBe('tauri');
+  });
+});
 
-    expect(platform.id).toBe('tauri');
-    expect([...platform.capabilities]).toEqual([]);
+describe('桌面侧的能力集合来自 Rust，不来自前端', () => {
+  it('Rust 说有什么，就有什么', async () => {
+    stubTauriRuntime(true, ['tray']);
+    await expect(
+      createPlatformService().probeCapabilities().then((set) => [...set])
+    ).resolves.toEqual(['tray']);
+  });
+
+  it('Rust 说没有，前端就必须认为没有', async () => {
+    // 这条是为了防住「托盘创建失败了但界面还显示可用」——
+    // 那种情况下用户一点「隐藏到托盘」，窗口就消失且找不回来
+    stubTauriRuntime(true, []);
+    expect(await createPlatformService().probeCapabilities()).toEqual(new Set());
+  });
+
+  it('Rust 报上来的未知能力名字会被丢掉', async () => {
+    // 新版本 Rust 加了能力、旧前端不认识时，不能崩
+    stubTauriRuntime(true, ['tray', 'teleport', 'mind-reading']);
+    expect([...(await createPlatformService().probeCapabilities())]).toEqual(['tray']);
   });
 });
 

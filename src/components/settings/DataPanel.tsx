@@ -1,4 +1,4 @@
-import { Database, HardDrive, KeyRound, ShieldCheck, TriangleAlert } from 'lucide-react';
+import { CheckCircle2, Database, KeyRound, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -8,17 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { useSettingsStore } from '@/features';
-
-/** 能力的中文名，纯粹为了好读；真正的可用性由 platformService 决定 */
-const CAPABILITY_LABELS: Record<string, string> = {
-  'file-read': '读取本地文件',
-  screenshot: '截屏',
-  notification: '系统通知',
-  autostart: '开机自启',
-};
-
-const ALL_CAPABILITIES = Object.keys(CAPABILITY_LABELS);
+import { PLATFORM_CAPABILITIES, PLATFORM_CAPABILITY_SPECS, useSettingsStore } from '@/features';
 
 interface DataPanelProps {
   onRequestReset: () => void;
@@ -28,13 +18,16 @@ interface DataPanelProps {
  * 数据与安全面板
  * ----------------------------------------------------------------------------
  * 这一屏的内容**全部来自服务层的自述**，没有一句是写死的：
- *   数据放在哪   ← storage.resolveLocation()
- *   凭据放在哪   ← storage.credentialStorage
- *   凭据能不能用 ← storage.probeCredentialStorage()
- *   平台有什么能力 ← platform.capabilities
+ *   数据放在哪     ← storage.resolveLocation()
+ *   凭据放在哪     ← storage.credentialStorage
+ *   凭据能不能用   ← storage.probeCredentialStorage()
+ *   有哪些能力可用 ← platform.probeCapabilities()
  *
  * 为什么较真到这个程度：同一个界面，浏览器版和桌面版的「事实」是不一样的。
  * 只要有一句写死的文案，就必然在其中一种环境下撒谎。
+ *
+ * 能力列表从 PLATFORM_CAPABILITY_SPECS 渲染，所以新增一项能力只需要改清单，
+ * 不需要回来动这个文件。
  */
 export function DataPanel({ onRequestReset }: DataPanelProps) {
   const driverName = useSettingsStore((state) => state.driverName);
@@ -137,27 +130,50 @@ export function DataPanel({ onRequestReset }: DataPanelProps) {
         </CardHeader>
 
         <CardContent>
-          <ul data-testid="platform-capabilities" className="grid grid-cols-2 gap-2">
-            {ALL_CAPABILITIES.map((capability) => {
+          <ul data-testid="platform-capabilities" className="space-y-2">
+            {PLATFORM_CAPABILITIES.map((capability) => {
               const available = capabilities.includes(capability);
+              const spec = PLATFORM_CAPABILITY_SPECS[capability];
               return (
                 <li
                   key={capability}
                   data-capability={capability}
                   data-available={available ? 'true' : 'false'}
-                  className="flex items-center gap-2 rounded-md border border-border px-3 py-2 text-[12px]"
+                  className="flex items-start gap-2.5 rounded-md border border-border px-3 py-2.5"
                 >
                   {available ? (
-                    <HardDrive className="size-3.5 shrink-0 text-success" aria-hidden />
+                    <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-success" aria-hidden />
                   ) : (
-                    <TriangleAlert className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                    <TriangleAlert
+                      className="mt-0.5 size-3.5 shrink-0 text-muted-foreground"
+                      aria-hidden
+                    />
                   )}
-                  <span className={available ? 'text-foreground' : 'text-muted-foreground'}>
-                    {CAPABILITY_LABELS[capability]}
-                  </span>
-                  <span className="ml-auto text-[10px] text-muted-foreground">
-                    {available ? '可用' : '未开放'}
-                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={
+                          available
+                            ? 'text-[12px] font-medium text-foreground'
+                            : 'text-[12px] font-medium text-muted-foreground'
+                        }
+                      >
+                        {spec.label}
+                      </span>
+                      <span
+                        className={
+                          available
+                            ? 'rounded border border-success/40 px-1 py-px text-[10px] text-success'
+                            : 'rounded border border-border px-1 py-px text-[10px] text-muted-foreground'
+                        }
+                      >
+                        {available ? '可用' : `阶段 ${spec.plannedStage}`}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">
+                      {spec.description}
+                    </p>
+                  </div>
                 </li>
               );
             })}
@@ -169,7 +185,7 @@ export function DataPanel({ onRequestReset }: DataPanelProps) {
         <CardHeader>
           <CardTitle>重置本地数据</CardTitle>
           <CardDescription>
-            清空全部会话记录、消息、人格配置和模型地址记录
+            清空全部会话记录、消息、人格配置、模型地址记录和窗口偏好
             {keyIsPersisted ? '，并删除本机保存的 API Key' : ''}。此操作无法恢复。
           </CardDescription>
         </CardHeader>

@@ -242,6 +242,24 @@ try {
   await page.waitForSelector(testId('settings-panel'));
   check('可以切到设置页', await page.locator(testId('settings-panel')).isVisible());
 
+  // 阶段 C：托盘在浏览器里必须**如实**显示为不可用，而不是给一个点了没反应的开关
+  check(
+    '浏览器模式如实说明没有系统托盘',
+    await page.locator(testId('tray-unavailable')).isVisible()
+  );
+  check(
+    '托盘开关被禁用而不是藏起来',
+    await page.locator(testId('close-to-tray-switch')).isDisabled()
+  );
+  check(
+    '能力列表把托盘标为未开放',
+    (await page.locator('[data-capability="tray"]').getAttribute('data-available')) === 'false'
+  );
+  check(
+    '未开放的能力不显示「立即隐藏」按钮',
+    (await page.locator(testId('hide-to-tray')).count()) === 0
+  );
+
   // 先故意填错：期望在字段旁边看到具体原因，而不是笼统的「连接失败」
   await page.fill(testId('model-api-url'), 'not-a-url');
   await page.click(testId('test-connection'));
