@@ -1,6 +1,7 @@
 import { ModelConfigForm } from './ModelConfigForm';
 import { PersonaForm } from './PersonaForm';
 import { TraySettings } from './TraySettings';
+import { NotificationSettings } from './NotificationSettings';
 import { DataPanel } from './DataPanel';
 
 interface SettingsPanelProps {
@@ -14,13 +15,14 @@ export function SettingsPanel({ onRequestReset }: SettingsPanelProps) {
         <div>
           <h1 className="text-base font-semibold text-foreground">设置</h1>
           <p className="mt-1 text-xs text-muted-foreground">
-            模型配置、人格配置、托盘与窗口、数据去向。改完即生效，不需要重启。
+            模型配置、人格配置、托盘与窗口、通知、数据去向。改完即生效，不需要重启。
           </p>
         </div>
 
         <ModelConfigForm />
         <PersonaForm />
         <TraySettings />
+        <NotificationSettings />
         <DataPanel onRequestReset={onRequestReset} />
       </div>
     </main>

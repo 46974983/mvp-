@@ -32,6 +32,12 @@ pub const DEFAULT_MODEL_NAME: &str = "gpt-4o-mini";
 /// 而且托盘必须在应用运行的整个期间都在。
 pub const DEFAULT_CLOSE_TO_TRAY: bool = true;
 
+/// 「回复生成完成时发系统通知」的默认值。
+///
+/// 同样选 true：这个开关的整个意义就是「你切走了，好了我叫你」。
+/// 窗口在前台时不会打扰（见 notify.rs 的判定），所以开着不会带来噪音。
+pub const DEFAULT_NOTIFY_ON_REPLY_COMPLETE: bool = true;
+
 /// 去掉首尾空白；全空白则回退到「未命名会话」
 pub fn normalize_title(title: &str) -> String {
     let trimmed = title.trim();
@@ -65,6 +71,7 @@ pub mod setting_keys {
     pub const MODEL_API_URL: &str = "model.api_url";
     pub const MODEL_NAME: &str = "model.model_name";
     pub const WINDOW_CLOSE_TO_TRAY: &str = "window.close_to_tray";
+    pub const NOTIFICATION_ON_REPLY_COMPLETE: &str = "notification.on_reply_complete";
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +139,36 @@ impl Default for WindowSettings {
     }
 }
 
+/// 通知相关的偏好（非敏感，进 settings 表）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationSettings {
+    /// 回复生成完成时是否发系统通知
+    pub on_reply_complete: bool,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            on_reply_complete: DEFAULT_NOTIFY_ON_REPLY_COMPLETE,
+        }
+    }
+}
+
+/// 一次通知投递的结果。
+///
+/// 为什么不返回 `Result<(), Error>`：**「没发出去」不总是错误**。
+/// 窗口在前台时跳过是正常行为，用户主动关掉通知也是正常行为。
+/// 把它当成错误会让界面只能弹红色提示，而这里需要的是一句说明。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyOutcome {
+    /// 通知是否真的发出去了
+    pub delivered: bool,
+    /// 给人看的一句话。delivered 为 false 时说明原因
+    pub reason: String,
+}
+
 /// 全部可持久化的应用设置
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -139,6 +176,7 @@ pub struct AppSettings {
     pub persona: PersonaConfig,
     pub model: PersistedModelConfig,
     pub window: WindowSettings,
+    pub notification: NotificationSettings,
 }
 
 impl Default for AppSettings {
@@ -154,6 +192,7 @@ impl Default for AppSettings {
                 model_name: DEFAULT_MODEL_NAME.to_string(),
             },
             window: WindowSettings::default(),
+            notification: NotificationSettings::default(),
         }
     }
 }

@@ -84,3 +84,177 @@ describe('能力清单', () => {
     expect(PLATFORM_CAPABILITY_SPECS.tray.plannedStage).toBe('C');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 浏览器通知（阶段 C）
+// ---------------------------------------------------------------------------
+
+/**
+ * jsdom 里没有 Notification API，所以这里自己造一个。
+ * 造它不是为了「测假实现」，而是为了覆盖三件真实会发生的事：
+ * 没授权、被前台跳过、以及真的发出去。
+ */
+function stubNotificationApi(permission: NotificationPermission) {
+  const created: Array<{ title: string; body?: string }> = [];
+
+  class FakeNotification {
+    static permission: NotificationPermission = permission;
+    static async requestPermission(): Promise<NotificationPermission> {
+      return permission;
+    }
+    constructor(title: string, options?: { body?: string }) {
+      created.push({ title, body: options?.body });
+    }
+  }
+
+  Object.defineProperty(globalThis, 'Notification', {
+    value: FakeNotification,
+    configurable: true,
+    writable: true,
+  });
+
+  return created;
+}
+
+function stubDocumentFocus(focused: boolean) {
+  Object.defineProperty(document, 'hasFocus', {
+    value: () => focused,
+    configurable: true,
+  });
+}
+
+function clearNotificationApi() {
+  Reflect.deleteProperty(globalThis, 'Notification');
+  Reflect.deleteProperty(document, 'hasFocus');
+}
+
+describe('浏览器通知', () => {
+  it('没有 Notification API 时抛 UnsupportedCapabilityError（环境不支持）', async () => {
+    clearNotificationApi();
+    await expect(
+      createBrowserPlatformService().showNotification({ title: 'a', body: 'b' })
+    ).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+  });
+
+  it('已授权且强制发送时，真的创建一条通知', async () => {
+    const created = stubNotificationApi('granted');
+
+    const outcome = await createBrowserPlatformService().showNotification({
+      title: '会话 A',
+      body: '回复好了',
+      force: true,
+    });
+
+    expect(outcome.delivered).toBe(true);
+    expect(created).toEqual([{ title: '会话 A', body: '回复好了' }]);
+    clearNotificationApi();
+  });
+
+  it('没授权时返回一句说明，而不是抛错', async () => {
+    stubNotificationApi('denied');
+
+    const outcome = await createBrowserPlatformService().showNotification({
+      title: '会话 A',
+      body: '回复好了',
+      force: true,
+    });
+
+    // 「没授权」是运行时状态，不是程序错误 —— 界面需要的是说明，不是异常
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.reason).toContain('权限');
+    clearNotificationApi();
+  });
+
+  it('页面正在前台且未强制时跳过 —— 和桌面端同一套打扰规则', async () => {
+    const created = stubNotificationApi('granted');
+    stubDocumentFocus(true);
+
+    const outcome = await createBrowserPlatformService().showNotification({
+      title: '会话 A',
+      body: '回复好了',
+    });
+
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.reason).toContain('前台');
+    expect(created).toHaveLength(0);
+    clearNotificationApi();
+  });
+
+  it('页面在前台但用户明确要求时照发（设置页的测试按钮）', async () => {
+    const created = stubNotificationApi('granted');
+    stubDocumentFocus(true);
+
+    const outcome = await createBrowserPlatformService().showNotification({
+      title: '会话 A',
+      body: '回复好了',
+      force: true,
+    });
+
+    expect(outcome.delivered).toBe(true);
+    expect(created).toHaveLength(1);
+    clearNotificationApi();
+  });
+});
+
+describe('授权申请只在用户明确要求时发起', () => {
+  it('后台路径（未 force）不会触发授权弹窗', async () => {
+    let requested = 0;
+    class FakeNotification {
+      static permission: NotificationPermission = 'default';
+      static async requestPermission(): Promise<NotificationPermission> {
+        requested += 1;
+        return 'granted';
+      }
+      constructor() {
+        /* 不会走到这里 */
+      }
+    }
+    Object.defineProperty(globalThis, 'Notification', {
+      value: FakeNotification,
+      configurable: true,
+      writable: true,
+    });
+    // 让打扰判定放行，确保「没弹窗」不是因为被前台跳过了
+    stubDocumentFocus(false);
+
+    const outcome = await createBrowserPlatformService().showNotification({
+      title: '会话 A',
+      body: '回复好了',
+    });
+
+    // 浏览器的授权提示需要用户手势，后台时机申请会被静默拒绝，所以不该发这一步
+    expect(requested).toBe(0);
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.reason).toContain('测试通知');
+    clearNotificationApi();
+  });
+
+  it('用户点按钮（force）时才发起授权申请', async () => {
+    let requested = 0;
+    class FakeNotification {
+      static permission: NotificationPermission = 'default';
+      static async requestPermission(): Promise<NotificationPermission> {
+        requested += 1;
+        return 'granted';
+      }
+      constructor() {
+        /* 不需要真的创建 */
+      }
+    }
+    Object.defineProperty(globalThis, 'Notification', {
+      value: FakeNotification,
+      configurable: true,
+      writable: true,
+    });
+
+    const outcome = await createBrowserPlatformService().showNotification({
+      title: '会话 A',
+      body: '回复好了',
+      force: true,
+    });
+
+    expect(requested).toBe(1);
+    expect(outcome.delivered).toBe(true);
+    clearNotificationApi();
+  });
+});

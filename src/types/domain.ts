@@ -80,6 +80,22 @@ export interface WindowSettings {
   closeToTray: boolean;
 }
 
+/**
+ * 通知偏好（非敏感，进 settings 表）
+ *
+ * 和窗口偏好一样，两种运行模式下都存在这个设置 —— 结构不随环境变形，
+ * 至于「实际上能不能发出去」由平台能力决定（浏览器要授权，桌面端不需要）。
+ */
+export interface NotificationSettings {
+  /**
+   * 回复生成完成时是否发系统通知。
+   *
+   * 默认 true：这个开关的整个意义就是「你切走了，好了我叫你」。
+   * 窗口在前台时不会打扰，所以开着不会带来噪音。
+   */
+  onReplyComplete: boolean;
+}
+
 /** 全部可持久化的应用设置 */
 export interface AppSettings {
   persona: PersonaConfig;
@@ -87,6 +103,8 @@ export interface AppSettings {
   model: PersistedModelConfig;
   /** 窗口与托盘偏好 */
   window: WindowSettings;
+  /** 通知偏好 */
+  notification: NotificationSettings;
 }
 
 /** 主题模式 */

@@ -8,6 +8,7 @@ export type {
   MessageRole,
   MessageStatus,
   ModelConfig,
+  NotificationSettings,
   OperationResult,
   PersonaConfig,
   StorageLocation,

@@ -51,9 +51,9 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   },
   notification: {
     label: '系统通知',
-    description: '把提示发到操作系统的通知中心',
+    description: '回复生成完成时提醒你，窗口不在前台时才会发',
     plannedStage: 'C',
-    desktopImplemented: false,
+    desktopImplemented: true,
   },
   autostart: {
     label: '开机自启',
@@ -84,6 +84,32 @@ export class UnsupportedCapabilityError extends Error {
     this.name = 'UnsupportedCapabilityError';
     this.capability = capability;
   }
+}
+
+/** 一条要发出去的通知 */
+export interface NotificationRequest {
+  title: string;
+  body: string;
+  /**
+   * 强制发送，跳过「窗口正在前台就不打扰」的判断。
+   *
+   * 只有设置页的「发一条测试通知」该用它 —— 那时用户明确要求看到它，
+   * 而窗口恰好就在前台，按普通规则必然被跳过，那样按钮看起来就是坏的。
+   */
+  force?: boolean;
+}
+
+/**
+ * 一次通知投递的结果。
+ *
+ * 为什么是返回值而不是抛错：**「没发出去」不总是错误**。
+ * 窗口在前台时跳过是正常行为，用户自己关掉了系统通知也是正常行为。
+ * 当成错误的话，界面只能弹红色提示，而这里需要的是一句说明。
+ */
+export interface NotificationOutcome {
+  delivered: boolean;
+  /** 给人看的一句话。delivered 为 false 时说明原因 */
+  reason: string;
 }
 
 /**
@@ -132,8 +158,14 @@ export interface PlatformService {
   readFile(path: string): Promise<string>;
   /** 截屏，返回图片数据的引用。阶段 D */
   takeScreenshot(): Promise<string>;
-  /** 发一条系统通知 */
-  showNotification(text: string): Promise<void>;
+  /**
+   * 发一条系统通知。
+   *
+   * 能力本身不存在时（浏览器没有 Notification API）抛 UnsupportedCapabilityError；
+   * 能力存在但这次没发出去（窗口在前台、系统没授权）返回 delivered=false ——
+   * 前者是环境问题，后者是运行时状态，不该混为一谈。
+   */
+  showNotification(request: NotificationRequest): Promise<NotificationOutcome>;
   /** 开机自动启动。阶段 C 后续步骤 */
   setAutostart(enabled: boolean): Promise<void>;
 }

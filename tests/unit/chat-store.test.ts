@@ -4,6 +4,11 @@ import { createConversationsStore } from '@/features/conversations/store';
 import { createSettingsStore } from '@/features/settings/store';
 import type { ModelProvider } from '@/services/model';
 import {
+  createBrowserPlatformService,
+  type PlatformCapability,
+  type PlatformService,
+} from '@/services/platform';
+import {
   createCapturingProvider,
   createInstantProvider,
   createStepProvider,
@@ -11,8 +16,11 @@ import {
   waitFor,
 } from './helpers';
 
-async function setup(model: ModelProvider = createInstantProvider('这是模拟回复。')) {
-  const services = createTestServices({ model });
+async function setup(
+  model: ModelProvider = createInstantProvider('这是模拟回复。'),
+  platform?: PlatformService
+) {
+  const services = createTestServices({ model, ...(platform ? { platform } : {}) });
   const conversations = createConversationsStore(services);
   const settings = createSettingsStore(services);
   const chat = createChatStore(services, conversations, settings);
@@ -21,6 +29,29 @@ async function setup(model: ModelProvider = createInstantProvider('这是模拟�
   await conversations.getState().load();
 
   return { services, conversations, settings, chat };
+}
+
+/**
+ * 造一个「声称有通知能力」的平台，并把收到的通知记下来。
+ *
+ * 为什么要造：jsdom 里没有 Notification API，真实浏览器实现会直接判定
+ * 「这个环境不支持通知」—— 那样成功路径就永远测不到。
+ */
+function createNotifyingPlatform(capabilities: PlatformCapability[] = ['notification']) {
+  const base = createBrowserPlatformService();
+  const sent: Array<{ title: string; body: string; force?: boolean }> = [];
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-notify',
+    probeCapabilities: async () => new Set(capabilities),
+    showNotification: async (request) => {
+      sent.push(request);
+      return { delivered: true, reason: '已发送。' };
+    },
+  };
+
+  return { platform, sent };
 }
 
 describe('发送消息', () => {
@@ -250,5 +281,107 @@ describe('失败处理', () => {
 
     chat.getState().clearError();
     expect(chat.getState().error).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 回复完成后的通知（阶段 C）
+// ---------------------------------------------------------------------------
+
+describe('回复完成后的通知', () => {
+  it('开关开着时发出通知：标题是会话标题，正文是去格式后的摘要', async () => {
+    const { platform, sent } = createNotifyingPlatform();
+    const { chat } = await setup(createInstantProvider('## 结论\n\n这段**回复**够短。'), platform);
+
+    await chat.getState().send('你好');
+
+    expect(sent).toHaveLength(1);
+    // 首条用户消息成为会话标题，通知用它当标题，用户才知道是哪个会话
+    expect(sent[0]?.title).toBe('你好');
+    expect(sent[0]?.body).toBe('结论 这段回复够短。');
+    // 正常路径**不设** force：该不该打扰由平台层按窗口状态判断。
+    // 这里如果传了 true，就会变成「关着窗口也照弹」，或者「在前台也照弹」。
+    expect(sent[0]?.force).toBeUndefined();
+  });
+
+  it('开关关掉之后不再发', async () => {
+    const { platform, sent } = createNotifyingPlatform();
+    const { chat, settings } = await setup(createInstantProvider('回复好了。'), platform);
+
+    await settings.getState().setNotifyOnReplyComplete(false);
+    await chat.getState().send('你好');
+
+    expect(sent).toHaveLength(0);
+  });
+
+  it('用户中途停止不发通知 —— 他就在屏幕前，而且是他自己按的', async () => {
+    const { platform, sent } = createNotifyingPlatform();
+    const provider = createStepProvider('一段慢慢吐出来的回复内容');
+    const { chat } = await setup(provider, platform);
+
+    const pending = chat.getState().send('你好');
+    await waitFor(() => chat.getState().streamingText.length >= 1);
+    chat.getState().stop();
+    await pending;
+
+    expect(chat.getState().lastOutcome).toBe('aborted');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('出错时也发一条 —— 否则切走之后消息会悄无声息地失败', async () => {
+    const { platform, sent } = createNotifyingPlatform();
+    const failing: ModelProvider = {
+      id: 'failing',
+      label: '会失败的模型',
+      performsNetworkRequest: true,
+      async testConnection() {
+        return { ok: true, message: 'ok' };
+      },
+      async streamChat() {
+        throw new Error('连接模型服务失败：网络不通');
+      },
+      abort() {
+        /* 无需中断 */
+      },
+    };
+
+    const { chat } = await setup(failing, platform);
+    await chat.getState().send('你好');
+
+    expect(chat.getState().error).not.toBeNull();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toContain('连接模型服务失败');
+  });
+
+  it('环境没有通知能力时安静跳过，不影响对话', async () => {
+    // 能力集合里没有 notification：连调用都不该发生
+    const { platform, sent } = createNotifyingPlatform([]);
+    const { chat, conversations } = await setup(createInstantProvider('回复好了。'), platform);
+
+    await chat.getState().send('你好');
+
+    expect(sent).toHaveLength(0);
+    // 对话本身必须完全正常
+    expect(chat.getState().lastOutcome).toBe('complete');
+    expect(conversations.getState().messages).toHaveLength(2);
+  });
+
+  it('通知失败不影响已经成功的对话', async () => {
+    const base = createBrowserPlatformService();
+    const platform: PlatformService = {
+      ...base,
+      id: 'broken-notify',
+      probeCapabilities: async () => new Set<PlatformCapability>(['notification']),
+      showNotification: async () => {
+        throw new Error('发送通知失败：通知服务不可用');
+      },
+    };
+
+    const { chat, conversations } = await setup(createInstantProvider('回复好了。'), platform);
+    await chat.getState().send('你好');
+
+    expect(chat.getState().lastOutcome).toBe('complete');
+    expect(chat.getState().error).toBeNull();
+    expect(conversations.getState().messages[1]?.status).toBe('complete');
   });
 });

@@ -58,11 +58,15 @@ export const DEFAULT_MODEL_ENDPOINT = {
 /** 「关闭窗口时缩到托盘」的默认值。与 Rust 侧 DEFAULT_CLOSE_TO_TRAY 保持一致。 */
 export const DEFAULT_CLOSE_TO_TRAY = true;
 
+/** 「回复完成时发通知」的默认值。与 Rust 侧 DEFAULT_NOTIFY_ON_REPLY_COMPLETE 保持一致。 */
+export const DEFAULT_NOTIFY_ON_REPLY_COMPLETE = true;
+
 export function defaultSettings(): AppSettings {
   return {
     persona: { ...DEFAULT_PERSONA },
     model: { ...DEFAULT_MODEL_ENDPOINT },
     window: { closeToTray: DEFAULT_CLOSE_TO_TRAY },
+    notification: { onReplyComplete: DEFAULT_NOTIFY_ON_REPLY_COMPLETE },
   };
 }
 

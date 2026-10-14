@@ -4,6 +4,7 @@ import {
   createBrowserStorage,
   DEFAULT_CLOSE_TO_TRAY,
   DEFAULT_PERSONA,
+  DEFAULT_NOTIFY_ON_REPLY_COMPLETE,
 } from '@/services/storage';
 import {
   createBrowserPlatformService,
@@ -267,5 +268,97 @@ describe('托盘与窗口设置', () => {
     await store.getState().resetAll();
 
     expect(store.getState().closeToTray).toBe(DEFAULT_CLOSE_TO_TRAY);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 通知设置（阶段 C）
+// ---------------------------------------------------------------------------
+
+/** 造一个「声称有通知能力」的平台，记下发出去的通知 */
+function createNotifyingPlatform() {
+  const base = createBrowserPlatformService();
+  const sent: Array<{ title: string; body: string; force?: boolean }> = [];
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-notify',
+    probeCapabilities: async () => new Set<PlatformCapability>(['notification']),
+    showNotification: async (request) => {
+      sent.push(request);
+      return { delivered: true, reason: '已发送。' };
+    },
+  };
+
+  return { platform, sent };
+}
+
+describe('通知设置', () => {
+  it('默认开启「回复完成时提醒我」', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    expect(store.getState().onReplyComplete).toBe(true);
+    expect(DEFAULT_NOTIFY_ON_REPLY_COMPLETE).toBe(true);
+  });
+
+  it('可以关掉，并且落盘', async () => {
+    const { store, webStorage } = setup();
+    await store.getState().load();
+
+    const result = await store.getState().setNotifyOnReplyComplete(false);
+
+    expect(result.ok).toBe(true);
+    expect(store.getState().onReplyComplete).toBe(false);
+    // 内存里的设置结构要同步，否则设置页重渲染会跳回旧值
+    expect(store.getState().settings.notification.onReplyComplete).toBe(false);
+    // 而且是持久化的偏好，不只是内存
+    await store.getState().load();
+    expect(store.getState().onReplyComplete).toBe(false);
+    expect(JSON.stringify(webStorage.raw())).toContain('onReplyComplete');
+  });
+
+  it('测试通知带 force —— 点按钮时窗口必然在前台，不强制就必然被跳过', async () => {
+    const { platform, sent } = createNotifyingPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    const outcome = await store.getState().sendTestNotification();
+
+    expect(outcome.delivered).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.force).toBe(true);
+    // 标题用人格里的助手名，正文说明这是一条测试
+    expect(sent[0]?.title.length).toBeGreaterThan(0);
+    expect(sent[0]?.body).toContain('测试通知');
+  });
+
+  it('环境不支持时，测试通知返回一句说明而不是抛错', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    const outcome = await store.getState().sendTestNotification();
+
+    expect(outcome.delivered).toBe(false);
+    expect(outcome.reason.length).toBeGreaterThan(0);
+  });
+
+  it('浏览器模式探测不到通知能力时不显示为可用', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    // jsdom 没有 Notification API，所以能力集合里不该有它
+    expect(store.getState().platformCapabilities).not.toContain('notification');
+  });
+
+  it('重置数据会把通知开关恢复到默认值', async () => {
+    const { platform } = createNotifyingPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().setNotifyOnReplyComplete(false);
+
+    await store.getState().resetAll();
+
+    expect(store.getState().onReplyComplete).toBe(DEFAULT_NOTIFY_ON_REPLY_COMPLETE);
   });
 });

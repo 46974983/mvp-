@@ -15,9 +15,12 @@
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import type { ChatRequest, StreamOutcome } from '@/types';
 import type { Services } from '@/services/container';
-import { toUserFacingError } from '@/lib/log';
+import { createLogger, toUserFacingError } from '@/lib/log';
+import { summarizeForNotification } from '@/lib/text';
 import type { ConversationsStore } from '@/features/conversations/store';
 import type { SettingsStore } from '@/features/settings/store';
+
+const logger = createLogger('chat');
 
 /** 流式过程中落盘的节流间隔：太长丢内容，太短白费 IO */
 const STREAM_PERSIST_INTERVAL_MS = 400;
@@ -49,6 +52,43 @@ export function createChatStore(
   settings: SettingsStore
 ): ChatStore {
   const repo = services.storage.conversations;
+
+  /**
+   * 回复有结果之后发一条系统通知。
+   *
+   * 三个刻意的地方：
+   *
+   * 1. **只有「说完了」和「出错了」才发**，用户自己点停止不发 ——
+   *    他就在屏幕前，而且是他自己按的，再弹一条纯属添乱。
+   * 2. **该不该打扰由平台层判断**（窗口在前台就跳过），这里只管说「有结果了」。
+   *    前端拿不到窗口的焦点状态，硬做就得再加一条查询命令。
+   * 3. **发不出去不影响对话**。通知是附加品，它失败绝不能让一轮已经成功的对话
+   *    看起来像失败了，所以这里吞掉异常、只记日志。
+   */
+  async function notifyReplyFinished(summary: string): Promise<void> {
+    const settingsState = settings.getState();
+
+    // 先看环境有没有这个能力，而不是直接调用再吞异常 ——
+    // 「不支持」是可预期的状态，不该用异常来表达；否则日志里每次回复都留一条噪音
+    if (!settingsState.platformCapabilities.includes('notification')) return;
+    if (!settingsState.settings.notification.onReplyComplete) return;
+
+    const conversationState = conversations.getState();
+    const active = conversationState.conversations.find(
+      (item) => item.id === conversationState.activeId
+    );
+    const title = active?.title.trim() || settingsState.settings.persona.assistantName;
+
+    try {
+      await services.platform.showNotification({
+        title,
+        body: summarizeForNotification(summary),
+      });
+    } catch (error) {
+      // 只是「这条通知没发出去」，不是对话失败
+      logger.warn('发送回复完成通知失败', error);
+    }
+  }
 
   return create<ChatState>((set, get) => ({
     streaming: false,
@@ -149,6 +189,11 @@ export function createChatStore(
         await conversations.getState().reloadConversations();
 
         set({ lastOutcome: result.outcome });
+
+        // 用户中途点了停止就不打扰他：他就在屏幕前，而且是他自己按的
+        if (result.outcome === 'complete') {
+          await notifyReplyFinished(result.text);
+        }
       } catch (error) {
         // 失败也要留下痕迹：把占位消息标成 error，并把已生成的部分留住
         const messageId = get().streamingMessageId;
@@ -160,9 +205,11 @@ export function createChatStore(
             })
             .catch(() => undefined);
         }
-        set({
-          error: toUserFacingError(error, '生成回复时出了点问题，请重试。'),
-        });
+        const message = toUserFacingError(error, '生成回复时出了点问题，请重试。');
+        set({ error: message });
+
+        // 出错了也该告诉用户 —— 尤其是他切走的时候，否则消息就一直悄无声息地失败
+        await notifyReplyFinished(message);
       } finally {
         set({ streaming: false, streamingMessageId: null });
         await conversations.getState().reloadActiveMessages().catch(() => undefined);

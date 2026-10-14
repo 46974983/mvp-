@@ -12,6 +12,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
+use crate::MAIN_WINDOW_LABEL;
 use crate::commands::AppState;
 
 /// 托盘图标 id。留成常量，方便以后按 id 取回实例改图标或提示
@@ -88,7 +89,7 @@ fn build_inner(app: &AppHandle) -> Result<(), String> {
 /// 把主窗口显示出来并置于前台。
 /// 三个动作缺一不可：只 show() 的话，窗口可能还停在最小化状态、或者在别的窗口后面。
 pub fn show_main_window(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         log::warn!("找不到主窗口，无法显示");
         return;
     };
@@ -102,7 +103,7 @@ pub fn show_main_window(app: &AppHandle) {
 }
 
 pub fn hide_main_window(app: &AppHandle) {
-    let Some(window) = app.get_webview_window("main") else {
+    let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         log::warn!("找不到主窗口，无法隐藏");
         return;
     };

@@ -270,6 +270,31 @@ try {
     (await page.locator(testId('hide-to-tray')).count()) === 0
   );
 
+  // 阶段 C：通知。浏览器里 Notification API 是存在的，所以这一项**应当可用** ——
+  // 和托盘相反，正好验证界面不是「统一都标成不可用」糊弄过去的
+  check(
+    '浏览器模式有通知能力（与托盘相反，这一项可用）',
+    await page.locator(testId('notification-switch')).isEnabled()
+  );
+  check(
+    '能力列表把通知标为可用',
+    (await page.locator('[data-capability="notification"]').getAttribute('data-available')) ===
+      'true'
+  );
+  check(
+    '没有把「窗口在前台就不打扰」这句话漏掉',
+    (await page.locator(testId('settings-panel')).innerText()).includes('前台')
+  );
+
+  // 关掉通知开关：既验证开关本身能操作，也为第 9 段的「刷新后仍是关的」留下预期值
+  await page.click(testId('notification-switch'));
+  await page.waitForTimeout(200);
+  check(
+    '通知开关可以关掉',
+    (await page.locator(testId('notification-switch')).getAttribute('data-state')) ===
+      'unchecked'
+  );
+
   // 先故意填错：期望在字段旁边看到具体原因，而不是笼统的「连接失败」
   await page.fill(testId('model-api-url'), 'not-a-url');
   await page.click(testId('test-connection'));
@@ -360,6 +385,11 @@ try {
   check(
     '模型地址这类非敏感配置仍在',
     (await page.inputValue(testId('model-api-url'))) === 'https://api.example.com/v1'
+  );
+  check(
+    '刷新后通知开关仍是我设置的值',
+    (await page.locator(testId('notification-switch')).getAttribute('data-state')) ===
+      'unchecked'
   );
   await page.click(testId('nav-chat'));
   await page.waitForSelector(testId('chat-panel'));

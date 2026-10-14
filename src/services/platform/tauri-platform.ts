@@ -18,6 +18,8 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   PLATFORM_CAPABILITIES,
   UnsupportedCapabilityError,
+  type NotificationOutcome,
+  type NotificationRequest,
   type PlatformCapability,
   type PlatformService,
 } from './types';
@@ -62,9 +64,16 @@ export function createTauriPlatformService(): PlatformService {
       unsupported('screenshot');
     },
 
-    async showNotification() {
-      // 阶段 C 的后续步骤：需要引入 tauri-plugin-notification 并放开通知权限
-      unsupported('notification');
+    async showNotification(request: NotificationRequest): Promise<NotificationOutcome> {
+      // 走自己的窄命令，而不是插件的 JS API。
+      // 关键原因是「窗口在前台就不打扰」这个判定只有 Rust 知道答案 ——
+      // 前端拿不到窗口的可见性与焦点，硬做就得再加一条查询命令，
+      // 而且把策略拆到两处，迟早会分叉。
+      return invoke<NotificationOutcome>('notify', {
+        title: request.title,
+        body: request.body,
+        force: request.force ?? false,
+      });
     },
 
     async setAutostart() {

@@ -43,8 +43,17 @@ const CAPABILITY_CHECKLIST = [
       'set_close_to_tray',
     ],
     rustModules: ['src-tauri/src/tray.rs', 'src-tauri/src/window.rs'],
+    // 托盘走的是 Tauri 核心的 tray-icon feature，不是插件
+    rustPlugins: [],
   },
-  { id: 'notification', desktopImplemented: false, desktopCommands: [], rustModules: [] },
+  {
+    id: 'notification',
+    desktopImplemented: true,
+    desktopCommands: ['platform_capabilities', 'notify'],
+    rustModules: ['src-tauri/src/notify.rs'],
+    // 阶段 C 引入的第一个插件。忘了注册 .plugin(...) 的话，能力会静默失效。
+    rustPlugins: ['tauri_plugin_notification::init()'],
+  },
   { id: 'autostart', desktopImplemented: false, desktopCommands: [], rustModules: [] },
   { id: 'file-read', desktopImplemented: false, desktopCommands: [], rustModules: [] },
   { id: 'screenshot', desktopImplemented: false, desktopCommands: [], rustModules: [] },
@@ -153,6 +162,40 @@ test('托盘能力对应的 Tauri 配置已开启', () => {
     cargo,
     /tauri\s*=\s*\{[^}]*features\s*=\s*\[[^\]]*"tray-icon"/,
     '托盘需要 tauri 的 tray-icon feature'
+  );
+});
+
+test('需要插件的桌面能力，插件已注册且依赖已声明', () => {
+  for (const item of CAPABILITY_CHECKLIST) {
+    for (const plugin of item.rustPlugins ?? []) {
+      // 忘记 .plugin(...) 的表现是「能力静默失效」：编译通过，功能没有
+      assert.ok(
+        rustLib.includes(`.plugin(${plugin})`),
+        `${item.id}：${plugin} 没有在 lib.rs 里注册`
+      );
+
+      const crateName = plugin.split('::')[0].replace(/_/g, '-');
+      assert.match(
+        cargo,
+        new RegExp(`^${crateName}\\s*=`, 'm'),
+        `${item.id}：Cargo.toml 里缺少 ${crateName} 依赖`
+      );
+    }
+  }
+});
+
+test('插件不在前端开放，仍然只走自己的窄命令', () => {
+  // 阶段 C 引入了插件，但前端能碰到的还是 commands.rs 里那几条。
+  // 前端若直接 import 插件的 JS API，就必须在 capabilities 里放开对应权限。
+  const packageJson = JSON.parse(read('package.json'));
+  const dependencies = Object.keys(packageJson.dependencies ?? {});
+  const pluginJsPackages = dependencies.filter((name) => name.startsWith('@tauri-apps/plugin-'));
+
+  assert.deepEqual(
+    pluginJsPackages,
+    [],
+    '前端不应依赖任何 Tauri 插件的 JS 包：能力一律经 Rust 窄命令暴露，' +
+      '否则 capabilities 里就得放开插件权限'
   );
 });
 

@@ -28,7 +28,7 @@ import type {
   StorageLocation,
 } from '@/types';
 import type { Services } from '@/services/container';
-import type { PlatformCapability } from '@/services/platform';
+import type { NotificationOutcome, PlatformCapability } from '@/services/platform';
 import { DEFAULT_MODEL_ENDPOINT, defaultSettings } from '@/services/storage';
 import { toUserFacingError } from '@/lib/log';
 import { validatePersona } from './schema';
@@ -64,6 +64,8 @@ export interface SettingsState {
   apiKeyStored: boolean;
   /** 关闭窗口时是否缩到托盘（桌面侧的权威值） */
   closeToTray: boolean;
+  /** 回复生成完成时是否发系统通知 */
+  onReplyComplete: boolean;
 
   load(): Promise<void>;
   savePersona(persona: PersonaConfig): Promise<OperationResult>;
@@ -75,6 +77,10 @@ export interface SettingsState {
   setCloseToTray(enabled: boolean): Promise<OperationResult>;
   /** 立即把窗口藏到托盘 */
   hideToTray(): Promise<OperationResult>;
+  /** 修改「回复完成时发通知」 */
+  setNotifyOnReplyComplete(enabled: boolean): Promise<OperationResult>;
+  /** 发一条测试通知。跳过打扰判定 —— 用户明确要求看到它。 */
+  sendTestNotification(): Promise<NotificationOutcome>;
   testConnection(config: ModelConfig): Promise<OperationResult>;
   resetAll(): Promise<void>;
 }
@@ -118,6 +124,7 @@ export function createSettingsStore(services: Services): SettingsStore {
     credentialStatus: null,
     apiKeyStored: false,
     closeToTray: defaultSettings().window.closeToTray,
+    onReplyComplete: defaultSettings().notification.onReplyComplete,
 
     async load() {
       // 五件事互不依赖，并行拿。任何一件失败都不该让整个设置页打不开，
@@ -146,6 +153,7 @@ export function createSettingsStore(services: Services): SettingsStore {
         credentialStatus,
         platformCapabilities: capabilities,
         closeToTray: settings.window.closeToTray,
+        onReplyComplete: settings.notification.onReplyComplete,
       });
     },
 
@@ -232,6 +240,41 @@ export function createSettingsStore(services: Services): SettingsStore {
       }
     },
 
+    async setNotifyOnReplyComplete(enabled) {
+      // 这一项是纯前端偏好（要不要通知由 chat store 判断），
+      // 和 closeToTray 不同 —— 那个必须同时改 Rust 的内存缓存，所以由平台层负责持久化。
+      const next: AppSettings = {
+        ...get().settings,
+        notification: { onReplyComplete: enabled },
+      };
+
+      await enqueueWrite(() => settingsRepo.saveSettings(next));
+      set({ settings: next, onReplyComplete: enabled });
+
+      return {
+        ok: true,
+        message: enabled
+          ? '回复生成完成时会发系统通知；窗口正在前台时不会打扰你。'
+          : '已关闭回复完成通知。',
+      };
+    },
+
+    async sendTestNotification() {
+      try {
+        return await services.platform.showNotification({
+          title: get().settings.persona.assistantName,
+          body: '这是一条测试通知。能看到它，说明系统通知已经接通。',
+          // 用户明确点了按钮，此时窗口必然在前台 —— 不跳过的话按钮看起来就是坏的
+          force: true,
+        });
+      } catch (error) {
+        return {
+          delivered: false,
+          reason: toUserFacingError(error, '当前运行环境不支持系统通知。'),
+        };
+      }
+    },
+
     async testConnection(config) {
       // 委托给当前 provider。浏览器模式下的离线实现不会发网络请求，
       // 返回的文案里会讲清楚这一点，不让用户误以为真的连通了。
@@ -259,6 +302,7 @@ export function createSettingsStore(services: Services): SettingsStore {
         credentialStatus,
         platformCapabilities: capabilities,
         closeToTray: fresh.window.closeToTray,
+        onReplyComplete: fresh.notification.onReplyComplete,
       });
     },
   }));

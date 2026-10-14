@@ -13,6 +13,8 @@
 
 import {
   UnsupportedCapabilityError,
+  type NotificationOutcome,
+  type NotificationRequest,
   type PlatformCapability,
   type PlatformService,
 } from './types';
@@ -69,21 +71,43 @@ export function createBrowserPlatformService(): PlatformService {
       unsupported('screenshot');
     },
 
-    async showNotification(text: string) {
+    async showNotification(request: NotificationRequest): Promise<NotificationOutcome> {
       const api = resolveNotificationApi();
+      // 能力本身不存在 → 抛错（环境不支持）。下面「有 API 但没发出去」才是返回值。
       if (!api) unsupported('notification');
 
+      // 和桌面端保持同一套打扰判定：页面可见且聚焦时跳过。
+      // 两边规则一致，才不会出现「桌面版很安静、浏览器版一直弹」这种诡异差异。
+      if (!request.force) {
+        const visible = document.visibilityState === 'visible';
+        const focused = typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+        if (visible && focused) {
+          return { delivered: false, reason: '页面正在前台，已跳过通知。' };
+        }
+      }
+
       let permission = api.permission;
-      if (permission === 'default') {
+      if (permission === 'default' && request.force) {
+        // 只有用户明确要求时才发起授权申请。
+        // 浏览器的授权提示必须由用户手势触发 —— 在「回复完成」这种后台时机去申请，
+        // 既会被静默拒绝，又会平白打扰用户一次。
         permission = await api.requestPermission();
       }
       if (permission !== 'granted') {
-        throw new Error('浏览器未授予通知权限，请在地址栏的站点设置里开启。');
+        // 授权与否是运行时状态，不是错误 —— 返回说明比抛错更好用
+        return {
+          delivered: false,
+          reason: request.force
+            ? '浏览器没有授予通知权限，请在地址栏的站点设置里手动开启。'
+            : '浏览器还没有通知权限；到设置页点「发一条测试通知」可以发起申请。',
+        };
       }
 
-      const Ctor = (globalThis as unknown as { Notification: new (title: string) => unknown })
-        .Notification;
-      new Ctor(text);
+      const Ctor = (
+        globalThis as unknown as { Notification: new (title: string, options?: unknown) => unknown }
+      ).Notification;
+      new Ctor(request.title, { body: request.body });
+      return { delivered: true, reason: '已发送浏览器通知。' };
     },
 
     async setAutostart() {

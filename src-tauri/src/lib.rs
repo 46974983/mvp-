@@ -23,6 +23,7 @@ mod commands;
 mod db;
 mod error;
 mod models;
+mod notify;
 mod redact;
 mod secrets;
 mod tray;
@@ -42,6 +43,13 @@ use crate::window::WindowRuntime;
 /// 后者在 Program Files 里通常没有写权限。
 const DATABASE_FILE: &str = "assistant.db";
 
+/// 主窗口的 label。
+///
+/// 托盘、通知都要靠它去取窗口，写错的表现是**静默失效**：
+/// 托盘「显示主窗口」点了没反应，或者窗口在前台还照样弹通知。
+/// 所以只留这一个出处，并有契约测试比对它与 tauri.conf.json 里的值。
+pub const MAIN_WINDOW_LABEL: &str = "main";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -50,6 +58,9 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
+        // 阶段 C 引入的第一个插件。它只在 Rust 侧使用（见 notify.rs 的说明），
+        // 所以 capabilities 里没有为它增加任何权限。
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let database = Database::open(&data_dir.join(DATABASE_FILE))?;
@@ -139,6 +150,8 @@ pub fn run() {
             commands::hide_to_tray,
             commands::close_to_tray_enabled,
             commands::set_close_to_tray,
+            // 通知（阶段 C）
+            commands::notify,
         ])
         .run(tauri::generate_context!())
         .expect("启动桌面应用失败");

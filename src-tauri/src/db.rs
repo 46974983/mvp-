@@ -19,8 +19,8 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::models::{
     AppSettings, AppendMessageInput, Conversation, CreateConversationInput,
-    DEFAULT_CONVERSATION_TITLE, Message, MessagePatch, PersistedModelConfig, PersonaConfig,
-    StorageLocation, WindowSettings, derive_title_from_message, normalize_title,
+    DEFAULT_CONVERSATION_TITLE, Message, MessagePatch, NotificationSettings, PersistedModelConfig,
+    PersonaConfig, StorageLocation, WindowSettings, derive_title_from_message, normalize_title,
 };
 
 /// 迁移脚本按版本号排列，只增不改：已经跑过的版本在用户机器上不会再跑一次。
@@ -441,6 +441,13 @@ impl Database {
                     .map(|value| parse_bool(&value, defaults.window.close_to_tray))
                     .unwrap_or(defaults.window.close_to_tray),
             },
+            notification: NotificationSettings {
+                on_reply_complete: lookup(
+                    crate::models::setting_keys::NOTIFICATION_ON_REPLY_COMPLETE,
+                )
+                .map(|value| parse_bool(&value, defaults.notification.on_reply_complete))
+                .unwrap_or(defaults.notification.on_reply_complete),
+            },
         })
     }
 
@@ -480,6 +487,18 @@ impl Database {
         self.write_settings(&[(
             crate::models::setting_keys::WINDOW_CLOSE_TO_TRAY,
             if window.close_to_tray {
+                "true"
+            } else {
+                "false"
+            },
+        )])
+    }
+
+    /// 写通知偏好
+    pub fn save_notification_settings(&self, notification: &NotificationSettings) -> AppResult<()> {
+        self.write_settings(&[(
+            crate::models::setting_keys::NOTIFICATION_ON_REPLY_COMPLETE,
+            if notification.on_reply_complete {
                 "true"
             } else {
                 "false"
@@ -892,6 +911,89 @@ mod tests {
         let settings = database.get_settings().unwrap();
         assert_eq!(settings.persona.assistant_name, "阿枢");
         assert!(!settings.window.close_to_tray);
+    }
+
+    #[test]
+    fn notification_defaults_to_on() {
+        let database = database();
+        assert!(
+            database
+                .get_settings()
+                .unwrap()
+                .notification
+                .on_reply_complete
+        );
+    }
+
+    #[test]
+    fn notification_settings_round_trip() {
+        let database = database();
+
+        database
+            .save_notification_settings(&NotificationSettings {
+                on_reply_complete: false,
+            })
+            .unwrap();
+        assert!(
+            !database
+                .get_settings()
+                .unwrap()
+                .notification
+                .on_reply_complete
+        );
+
+        database
+            .save_notification_settings(&NotificationSettings {
+                on_reply_complete: true,
+            })
+            .unwrap();
+        assert!(
+            database
+                .get_settings()
+                .unwrap()
+                .notification
+                .on_reply_complete
+        );
+    }
+
+    #[test]
+    fn notification_and_window_settings_do_not_interfere() {
+        // 两组偏好共用 settings 表，键名必须各管各的
+        let database = database();
+        database
+            .save_window_settings(&WindowSettings {
+                close_to_tray: false,
+            })
+            .unwrap();
+        database
+            .save_notification_settings(&NotificationSettings {
+                on_reply_complete: true,
+            })
+            .unwrap();
+
+        let settings = database.get_settings().unwrap();
+        assert!(!settings.window.close_to_tray, "窗口偏好被通知偏好带偏了");
+        assert!(settings.notification.on_reply_complete);
+    }
+
+    #[test]
+    fn reset_restores_the_notification_default() {
+        let database = database();
+        database
+            .save_notification_settings(&NotificationSettings {
+                on_reply_complete: false,
+            })
+            .unwrap();
+
+        database.reset_all().unwrap();
+
+        assert!(
+            database
+                .get_settings()
+                .unwrap()
+                .notification
+                .on_reply_complete
+        );
     }
 
     #[test]
