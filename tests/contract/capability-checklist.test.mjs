@@ -52,9 +52,15 @@ const CAPABILITY_CHECKLIST = [
     desktopCommands: ['platform_capabilities', 'notify'],
     rustModules: ['src-tauri/src/notify.rs'],
     // 阶段 C 引入的第一个插件。忘了注册 .plugin(...) 的话，能力会静默失效。
-    rustPlugins: ['tauri_plugin_notification::init()'],
+    rustPlugins: ['tauri_plugin_notification::init('],
   },
-  { id: 'autostart', desktopImplemented: false, desktopCommands: [], rustModules: [] },
+  {
+    id: 'autostart',
+    desktopImplemented: true,
+    desktopCommands: ['platform_capabilities', 'autostart_status', 'set_autostart'],
+    rustModules: ['src-tauri/src/autostart.rs'],
+    rustPlugins: ['tauri_plugin_autostart::init('],
+  },
   { id: 'file-read', desktopImplemented: false, desktopCommands: [], rustModules: [] },
   { id: 'screenshot', desktopImplemented: false, desktopCommands: [], rustModules: [] },
 ];
@@ -168,9 +174,9 @@ test('托盘能力对应的 Tauri 配置已开启', () => {
 test('需要插件的桌面能力，插件已注册且依赖已声明', () => {
   for (const item of CAPABILITY_CHECKLIST) {
     for (const plugin of item.rustPlugins ?? []) {
-      // 忘记 .plugin(...) 的表现是「能力静默失效」：编译通过，功能没有
+      // 只匹配到左括号为止：有的插件要传初始化参数，写死 ent() 会漏掉它们
       assert.ok(
-        rustLib.includes(`.plugin(${plugin})`),
+        rustLib.includes(`.plugin(${plugin}`),
         `${item.id}：${plugin} 没有在 lib.rs 里注册`
       );
 

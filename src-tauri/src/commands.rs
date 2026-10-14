@@ -19,8 +19,9 @@ use crate::chat::{self, ChatRequest, StreamEvent, StreamResult};
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    AppSettings, AppendMessageInput, Conversation, CreateConversationInput, Message, MessagePatch,
-    ModelConfig, NotifyOutcome, OperationResult, PersonaConfig, StorageLocation, WindowSettings,
+    AppSettings, AppendMessageInput, AutostartStatus, Conversation, CreateConversationInput,
+    Message, MessagePatch, ModelConfig, NotifyOutcome, OperationResult, PersonaConfig,
+    StorageLocation, WindowSettings,
 };
 use crate::secrets::SecretStore;
 use crate::window::WindowRuntime;
@@ -354,8 +355,8 @@ pub fn cancel_chat(state: State<'_, AppState>) -> Result<(), String> {
 /// 一旦托盘创建失败，用户点「隐藏到托盘」就会让窗口消失且再也找不回来。
 #[tauri::command]
 pub async fn platform_capabilities(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    // 通知插件是编译进来的，程序能跑起来就说明它可用 —— 这一项不需要运行时探测
-    let mut capabilities = vec!["notification".to_string()];
+    // 通知与开机自启都由编译进来的插件提供，程序能跑起来就说明可用 —— 不需要运行时探测
+    let mut capabilities = vec!["notification".to_string(), "autostart".to_string()];
 
     // 托盘不一样：图标可能建失败，必须问运行期状态
     if state.window.tray_available() {
@@ -423,4 +424,23 @@ pub async fn notify(
     force: bool,
 ) -> Result<NotifyOutcome, String> {
     Ok(crate::notify::deliver(&app, &title, &body, force))
+}
+
+// ---------------------------------------------------------------------------
+// 开机自启（阶段 C）
+// ---------------------------------------------------------------------------
+
+/// 读取开机自启的当前状态。
+///
+/// 状态来自**系统**（注册表 + 任务管理器的开关），不来自我们的设置表 ——
+/// 用户随时可能在任务管理器里把它关掉，我们存副本必然对不上。
+#[tauri::command]
+pub async fn autostart_status(app: AppHandle) -> Result<AutostartStatus, String> {
+    Ok(crate::autostart::status(&app))
+}
+
+/// 开启 / 关闭开机自启
+#[tauri::command]
+pub async fn set_autostart(app: AppHandle, enabled: bool) -> Result<OperationResult, String> {
+    Ok(crate::autostart::set_enabled(&app, enabled))
 }

@@ -18,6 +18,7 @@
 //! 具体逻辑都在各自模块里，是为了让「外壳」看起来就是外壳 ——
 //! 想查什么能力被开放了，看 `invoke_handler` 那一份清单就够了。
 
+mod autostart;
 mod chat;
 mod commands;
 mod db;
@@ -58,9 +59,14 @@ pub fn run() {
                 .level(log::LevelFilter::Info)
                 .build(),
         )
-        // 阶段 C 引入的第一个插件。它只在 Rust 侧使用（见 notify.rs 的说明），
-        // 所以 capabilities 里没有为它增加任何权限。
+        // 阶段 C 引入的插件。都在 Rust 侧使用（见各自模块的说明），
+        // 所以 capabilities 里没有为它们增加任何权限。
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            // Windows 上这个参数会被忽略，只在 macOS 上有意义
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let database = Database::open(&data_dir.join(DATABASE_FILE))?;
@@ -152,6 +158,9 @@ pub fn run() {
             commands::set_close_to_tray,
             // 通知（阶段 C）
             commands::notify,
+            // 开机自启（阶段 C）
+            commands::autostart_status,
+            commands::set_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("启动桌面应用失败");

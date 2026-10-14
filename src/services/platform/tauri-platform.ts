@@ -15,9 +15,11 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
+import type { OperationResult } from '@/types';
 import {
   PLATFORM_CAPABILITIES,
   UnsupportedCapabilityError,
+  type AutostartStatus,
   type NotificationOutcome,
   type NotificationRequest,
   type PlatformCapability,
@@ -76,9 +78,12 @@ export function createTauriPlatformService(): PlatformService {
       });
     },
 
-    async setAutostart() {
-      // 阶段 C 的后续步骤：需要引入 tauri-plugin-autostart 并放开权限
-      unsupported('autostart');
+    async setAutostart(enabled: boolean): Promise<OperationResult> {
+      // 自启状态不存我们的数据库：系统才是权威。
+      // Rust 侧直接读写注册表并回报结果，前端不需要（也不该）记一份可能过期的副本。
+      return invoke<OperationResult>('set_autostart', { enabled });
     },
+
+    autostartStatus: () => invoke<AutostartStatus>('autostart_status'),
   };
 }

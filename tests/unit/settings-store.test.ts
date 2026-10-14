@@ -362,3 +362,87 @@ describe('通知设置', () => {
     expect(store.getState().onReplyComplete).toBe(DEFAULT_NOTIFY_ON_REPLY_COMPLETE);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 开机自启（阶段 C）
+// ---------------------------------------------------------------------------
+
+/** 造一个「声称有自启能力」的平台，并记录系统里的状态 */
+function createAutostartPlatform(initial = false) {
+  const base = createBrowserPlatformService();
+  let enabled = initial;
+  const calls: boolean[] = [];
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-autostart',
+    probeCapabilities: async () => new Set<PlatformCapability>(['autostart']),
+    autostartStatus: async () => ({ enabled, exePath: 'D://demo//app.exe' }),
+    setAutostart: async (next: boolean) => {
+      calls.push(next);
+      enabled = next;
+      return { ok: true, message: next ? '已设置开机自启。' : '已关闭开机自启。' };
+    },
+  };
+
+  return { platform, calls, current: () => enabled };
+}
+
+describe('开机自启', () => {
+  it('浏览器模式探测不到自启能力，开关不可用', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    expect(store.getState().platformCapabilities).not.toContain('autostart');
+    // 查询类方法如实返回事实，不抛错
+    expect(store.getState().autostartEnabled).toBe(false);
+  });
+
+  it('状态来自系统，不来自我们的设置表', async () => {
+    // 系统里已经开着，但我们的存储里没有任何相关记录
+    const { platform } = createAutostartPlatform(true);
+    const { store, webStorage } = setup(platform);
+
+    await store.getState().load();
+
+    expect(store.getState().autostartEnabled).toBe(true);
+    expect(store.getState().autostartExePath).toContain('app.exe');
+    // 关键：这个状态没有被写进本地存储 —— 系统才是权威
+    expect(JSON.stringify(webStorage.raw())).not.toContain('autostart');
+  });
+
+  it('开启后会重新问一次系统，而不是假设操作生效了', async () => {
+    const { platform, calls } = createAutostartPlatform(false);
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    const result = await store.getState().setAutostart(true);
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([true]);
+    expect(store.getState().autostartEnabled).toBe(true);
+  });
+
+  it('环境不支持时返回失败说明而不是抛错', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    const result = await store.getState().setAutostart(true);
+
+    expect(result.ok).toBe(false);
+    expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it('重置本地数据不会关掉开机自启', async () => {
+    const { platform, current } = createAutostartPlatform(true);
+    const { store } = setup(platform);
+    await store.getState().load();
+    expect(store.getState().autostartEnabled).toBe(true);
+
+    await store.getState().resetAll();
+
+    // 自启属于系统设置，不在「本地数据」范围内
+    expect(current()).toBe(true);
+    expect(store.getState().autostartEnabled).toBe(true);
+  });
+});

@@ -295,6 +295,25 @@ try {
       'unchecked'
   );
 
+  // 开机自启：浏览器里没有这回事，必须如实显示为不可用
+  check(
+    '浏览器模式如实说明没有开机自启',
+    await page.locator(testId('autostart-unavailable')).isVisible()
+  );
+  check(
+    '自启开关被禁用',
+    await page.locator(testId('autostart-switch')).isDisabled()
+  );
+  check(
+    '能力列表把开机自启标为未开放',
+    (await page.locator('[data-capability="autostart"]').getAttribute('data-available')) ===
+      'false'
+  );
+  check(
+    '不可用时不该显示「注册的启动路径」——那是桌面端才有的信息',
+    (await page.locator(testId('autostart-exe-path')).count()) === 0
+  );
+
   // 先故意填错：期望在字段旁边看到具体原因，而不是笼统的「连接失败」
   await page.fill(testId('model-api-url'), 'not-a-url');
   await page.click(testId('test-connection'));

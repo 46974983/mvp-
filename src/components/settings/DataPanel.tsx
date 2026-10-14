@@ -187,6 +187,8 @@ export function DataPanel({ onRequestReset }: DataPanelProps) {
           <CardDescription>
             清空全部会话记录、消息、人格配置、模型地址记录和窗口偏好
             {keyIsPersisted ? '，并删除本机保存的 API Key' : ''}。此操作无法恢复。
+            <br />
+            开机自启属于系统设置，不受影响；要关它请到上面那张卡片里操作。
           </CardDescription>
         </CardHeader>
         <CardActions>

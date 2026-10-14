@@ -241,6 +241,12 @@ test('capabilities 只放行 core:default，不放任何插件权限', () => {
 
 test('没有引入任何高危 Tauri 插件', () => {
   const cargo = readFile('src-tauri/Cargo.toml');
+
+  // 判定标准不是「阶段 C 能不能用」，而是**这些插件会不会给 WebView 开出一个大口子**：
+  //   fs / shell / http / process —— 前端一旦能碰，就等于绕过了整个 Rust 侧的约束
+  //   dialog / opener           —— 能让前端拉起系统 UI 去打开任意路径
+  // 阶段 C 引入的 autostart / global-shortcut / notification 不在此列：
+  // 它们只在 Rust 侧使用，前端碰不到，而且都被能力完整性清单逐项盯着。
   const dangerous = [
     'tauri-plugin-fs',
     'tauri-plugin-shell',
@@ -248,12 +254,10 @@ test('没有引入任何高危 Tauri 插件', () => {
     'tauri-plugin-dialog',
     'tauri-plugin-process',
     'tauri-plugin-opener',
-    'tauri-plugin-autostart',
-    'tauri-plugin-global-shortcut',
   ];
 
   for (const plugin of dangerous) {
-    assert.ok(!cargo.includes(plugin), `阶段 B 不应引入 ${plugin}`);
+    assert.ok(!cargo.includes(plugin), `不应引入 ${plugin}：它会给 WebView 开出直接通道`);
   }
 });
 

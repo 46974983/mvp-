@@ -258,3 +258,26 @@ describe('授权申请只在用户明确要求时发起', () => {
     clearNotificationApi();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 开机自启（阶段 C）
+// ---------------------------------------------------------------------------
+
+describe('开机自启', () => {
+  it('动作类方法抛 UnsupportedCapabilityError', async () => {
+    await expect(createBrowserPlatformService().setAutostart(true)).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError
+    );
+    await expect(createBrowserPlatformService().setAutostart(false)).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError
+    );
+  });
+
+  it('查询类方法返回事实：浏览器里没有自启这回事', async () => {
+    const status = await createBrowserPlatformService().autostartStatus();
+
+    // 「关掉标签页就结束了」是事实，不是失败 —— 查询不该抛错
+    expect(status.enabled).toBe(false);
+    expect(status.exePath).toBe('');
+  });
+});

@@ -13,6 +13,7 @@
 
 import {
   UnsupportedCapabilityError,
+  type AutostartStatus,
   type NotificationOutcome,
   type NotificationRequest,
   type PlatformCapability,
@@ -108,6 +109,12 @@ export function createBrowserPlatformService(): PlatformService {
       ).Notification;
       new Ctor(request.title, { body: request.body });
       return { delivered: true, reason: '已发送浏览器通知。' };
+    },
+
+    async autostartStatus(): Promise<AutostartStatus> {
+      // 浏览器里没有「开机自启」这回事，所以如实返回 false —— 这是事实，不是失败。
+      // 界面会先看能力集合，不会把这个值当成一种状态来展示。
+      return { enabled: false, exePath: '' };
     },
 
     async setAutostart() {

@@ -66,6 +66,10 @@ export interface SettingsState {
   closeToTray: boolean;
   /** 回复生成完成时是否发系统通知 */
   onReplyComplete: boolean;
+  /** 开机自启是否已开启（值来自系统，不是我们的记录） */
+  autostartEnabled: boolean;
+  /** 开启自启后会写进注册表的路径 —— 显示出来，让「注册的是哪个文件」可见 */
+  autostartExePath: string;
 
   load(): Promise<void>;
   savePersona(persona: PersonaConfig): Promise<OperationResult>;
@@ -81,6 +85,8 @@ export interface SettingsState {
   setNotifyOnReplyComplete(enabled: boolean): Promise<OperationResult>;
   /** 发一条测试通知。跳过打扰判定 —— 用户明确要求看到它。 */
   sendTestNotification(): Promise<NotificationOutcome>;
+  /** 开启 / 关闭开机自启 */
+  setAutostart(enabled: boolean): Promise<OperationResult>;
   testConnection(config: ModelConfig): Promise<OperationResult>;
   resetAll(): Promise<void>;
 }
@@ -125,17 +131,21 @@ export function createSettingsStore(services: Services): SettingsStore {
     apiKeyStored: false,
     closeToTray: defaultSettings().window.closeToTray,
     onReplyComplete: defaultSettings().notification.onReplyComplete,
+    autostartEnabled: false,
+    autostartExePath: '',
 
     async load() {
       // 五件事互不依赖，并行拿。任何一件失败都不该让整个设置页打不开，
       // 所以「是否已存 Key」「位置」「凭据可用性」「能力集合」都各自兜底。
-      const [settings, apiKeyStored, location, credentialStatus, capabilities] =
+      const [settings, apiKeyStored, location, credentialStatus, capabilities, autostart] =
         await Promise.all([
           settingsRepo.getSettings(),
           settingsRepo.hasStoredApiKey().catch(() => false),
           services.storage.resolveLocation().catch(() => null),
           services.storage.probeCredentialStorage().catch(() => null),
           probeCapabilities(),
+          // 自启状态问系统，不读我们的设置表 —— 用户可能在任务管理器里改过
+          services.platform.autostartStatus().catch(() => null),
         ]);
 
       set({
@@ -154,6 +164,8 @@ export function createSettingsStore(services: Services): SettingsStore {
         platformCapabilities: capabilities,
         closeToTray: settings.window.closeToTray,
         onReplyComplete: settings.notification.onReplyComplete,
+        autostartEnabled: autostart?.enabled ?? false,
+        autostartExePath: autostart?.exePath ?? '',
       });
     },
 
@@ -275,6 +287,30 @@ export function createSettingsStore(services: Services): SettingsStore {
       }
     },
 
+    async setAutostart(enabled) {
+      let result: OperationResult;
+      try {
+        result = await services.platform.setAutostart(enabled);
+      } catch (error) {
+        return {
+          ok: false,
+          message: toUserFacingError(error, '当前运行环境不支持开机自启。'),
+        };
+      }
+
+      if (result.ok) {
+        // 重新问一次系统，而不是假设刚才的操作生效了。
+        // 注册表写入有可能被系统策略挡下却不报错，那样界面就会显示一个假的开关状态。
+        const status = await services.platform.autostartStatus().catch(() => null);
+        set({
+          autostartEnabled: status?.enabled ?? get().autostartEnabled,
+          autostartExePath: status?.exePath ?? get().autostartExePath,
+        });
+      }
+
+      return result;
+    },
+
     async testConnection(config) {
       // 委托给当前 provider。浏览器模式下的离线实现不会发网络请求，
       // 返回的文案里会讲清楚这一点，不让用户误以为真的连通了。
@@ -286,11 +322,13 @@ export function createSettingsStore(services: Services): SettingsStore {
       await writeChain.catch(() => undefined);
       await services.storage.reset();
 
-      // 位置、凭据状态和能力集合重新探测一次（重置后可能变化）
-      const [location, credentialStatus, capabilities] = await Promise.all([
+      // 位置、凭据状态、能力集合和自启状态都重新探测一次（重置后可能变化）
+      const [location, credentialStatus, capabilities, autostart] = await Promise.all([
         services.storage.resolveLocation().catch(() => null),
         services.storage.probeCredentialStorage().catch(() => null),
         probeCapabilities(),
+        // 自启属于系统设置，重置本地数据**不会**动它，这里只是把真实状态再读一遍
+        services.platform.autostartStatus().catch(() => null),
       ]);
 
       const fresh = defaultSettings();
@@ -303,6 +341,8 @@ export function createSettingsStore(services: Services): SettingsStore {
         platformCapabilities: capabilities,
         closeToTray: fresh.window.closeToTray,
         onReplyComplete: fresh.notification.onReplyComplete,
+        autostartEnabled: autostart?.enabled ?? get().autostartEnabled,
+        autostartExePath: autostart?.exePath ?? get().autostartExePath,
       });
     },
   }));

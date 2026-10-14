@@ -16,6 +16,8 @@
  *    技术方案第 6 节要求高权限能力默认关闭、逐项开放。
  */
 
+import type { OperationResult } from '@/types';
+
 export const PLATFORM_CAPABILITIES = [
   'tray',
   'notification',
@@ -23,7 +25,6 @@ export const PLATFORM_CAPABILITIES = [
   'file-read',
   'screenshot',
 ] as const;
-
 export type PlatformCapability = (typeof PLATFORM_CAPABILITIES)[number];
 
 export interface PlatformCapabilitySpec {
@@ -57,9 +58,9 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   },
   autostart: {
     label: '开机自启',
-    description: '登录系统后自动启动应用',
+    description: '登录系统后自动启动，注册的是当前这个可执行文件的路径',
     plannedStage: 'C',
-    desktopImplemented: false,
+    desktopImplemented: true,
   },
   'file-read': {
     label: '读取本地文件',
@@ -84,6 +85,25 @@ export class UnsupportedCapabilityError extends Error {
     this.name = 'UnsupportedCapabilityError';
     this.capability = capability;
   }
+}
+
+/**
+ * 开机自启的当前状态。
+ *
+ * `enabled` 永远来自**系统**（注册表 + 任务管理器里的启动项开关），
+ * 不是我们自己的记录 —— 用户随时可能在任务管理器里把它关掉，
+ * 我们存一份副本只会和系统对不上。
+ */
+export interface AutostartStatus {
+  enabled: boolean;
+  /**
+   * 开启后会写进注册表的路径。
+   *
+   * 把它显示出来是为了让「注册的到底是哪个文件」这件事**可见**：
+   * 把 exe 挪走之后自启会静默失效，而系统仍然认为它是开着的。
+   * 开发模式下尤其要注意，那时注册的是 target/debug 下的路径。
+   */
+  exePath: string;
 }
 
 /** 一条要发出去的通知 */
@@ -166,6 +186,20 @@ export interface PlatformService {
    * 前者是环境问题，后者是运行时状态，不该混为一谈。
    */
   showNotification(request: NotificationRequest): Promise<NotificationOutcome>;
-  /** 开机自动启动。阶段 C 后续步骤 */
-  setAutostart(enabled: boolean): Promise<void>;
+
+  /**
+   * 查询开机自启的状态。
+   *
+   * 查询类方法在不支持该能力的环境里返回事实（enabled: false、路径为空），
+   * 而不是抛错 —— 和 `window.isCloseToTrayEnabled()` 同样的道理。
+   */
+  autostartStatus(): Promise<AutostartStatus>;
+
+  /**
+   * 开启或关闭开机自启。
+   *
+   * 返回结果而不是 void：写注册表可能失败（系统策略、权限），
+   * 界面需要说清是哪种失败，而不是笼统地弹一个「操作失败」。
+   */
+  setAutostart(enabled: boolean): Promise<OperationResult>;
 }

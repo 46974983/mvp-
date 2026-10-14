@@ -17,6 +17,7 @@ export {
   UnsupportedCapabilityError,
 } from './types';
 export type {
+  AutostartStatus,
   NotificationOutcome,
   NotificationRequest,
   PlatformCapability,

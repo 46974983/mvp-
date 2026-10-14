@@ -155,6 +155,19 @@ impl Default for NotificationSettings {
     }
 }
 
+/// 开机自启的当前状态。
+///
+/// `enabled` 永远来自**系统**（注册表 + 任务管理器里的开关），
+/// 不是我们自己的记录 —— 见 autostart.rs 的说明。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutostartStatus {
+    /// 系统里当前是否已启用
+    pub enabled: bool,
+    /// 开启后会写进注册表的路径。让「注册的是哪个文件」这件事对用户可见。
+    pub exe_path: String,
+}
+
 /// 一次通知投递的结果。
 ///
 /// 为什么不返回 `Result<(), Error>`：**「没发出去」不总是错误**。
