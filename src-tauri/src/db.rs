@@ -18,7 +18,7 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    AppendMessageInput, AppSettings, Conversation, CreateConversationInput,
+    AppSettings, AppendMessageInput, Conversation, CreateConversationInput,
     DEFAULT_CONVERSATION_TITLE, Message, MessagePatch, PersistedModelConfig, PersonaConfig,
     StorageLocation, WindowSettings, derive_title_from_message, normalize_title,
 };
@@ -193,10 +193,7 @@ impl Database {
         })
     }
 
-    pub fn create_conversation(
-        &self,
-        input: CreateConversationInput,
-    ) -> AppResult<Conversation> {
+    pub fn create_conversation(&self, input: CreateConversationInput) -> AppResult<Conversation> {
         let now = now_ms();
         let conversation = Conversation {
             id: new_id("conv"),
@@ -449,17 +446,32 @@ impl Database {
 
     pub fn save_persona(&self, persona: &PersonaConfig) -> AppResult<()> {
         self.write_settings(&[
-            (crate::models::setting_keys::PERSONA_ASSISTANT_NAME, persona.assistant_name.trim()),
-            (crate::models::setting_keys::PERSONA_USER_NAME, persona.user_name.trim()),
-            (crate::models::setting_keys::PERSONA_SYSTEM_PROMPT, persona.system_prompt.trim()),
+            (
+                crate::models::setting_keys::PERSONA_ASSISTANT_NAME,
+                persona.assistant_name.trim(),
+            ),
+            (
+                crate::models::setting_keys::PERSONA_USER_NAME,
+                persona.user_name.trim(),
+            ),
+            (
+                crate::models::setting_keys::PERSONA_SYSTEM_PROMPT,
+                persona.system_prompt.trim(),
+            ),
         ])
     }
 
     /// 只写非敏感投影。这个函数的参数类型里没有 Key，所以它写不出 Key。
     pub fn save_model_projection(&self, model: &PersistedModelConfig) -> AppResult<()> {
         self.write_settings(&[
-            (crate::models::setting_keys::MODEL_API_URL, model.api_url.trim()),
-            (crate::models::setting_keys::MODEL_NAME, model.model_name.trim()),
+            (
+                crate::models::setting_keys::MODEL_API_URL,
+                model.api_url.trim(),
+            ),
+            (
+                crate::models::setting_keys::MODEL_NAME,
+                model.model_name.trim(),
+            ),
         ])
     }
 
@@ -467,7 +479,11 @@ impl Database {
     pub fn save_window_settings(&self, window: &WindowSettings) -> AppResult<()> {
         self.write_settings(&[(
             crate::models::setting_keys::WINDOW_CLOSE_TO_TRAY,
-            if window.close_to_tray { "true" } else { "false" },
+            if window.close_to_tray {
+                "true"
+            } else {
+                "false"
+            },
         )])
     }
 
@@ -565,16 +581,18 @@ mod tests {
         let database = database();
         let columns: Vec<String> = database
             .with_conn(|conn| {
-                let mut statement = conn.prepare(
-                    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-                )?;
+                let mut statement = conn
+                    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
                 let rows = statement.query_map([], |row| row.get(0))?;
                 Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
             })
             .unwrap();
 
         for expected in ["conversations", "messages", "settings", "schema_migrations"] {
-            assert!(columns.iter().any(|name| name == expected), "缺少表 {expected}");
+            assert!(
+                columns.iter().any(|name| name == expected),
+                "缺少表 {expected}"
+            );
         }
     }
 
@@ -603,7 +621,9 @@ mod tests {
             })
             .unwrap();
 
-        database.touch_conversation(&first.id, Some(now_ms() + 10_000)).unwrap();
+        database
+            .touch_conversation(&first.id, Some(now_ms() + 10_000))
+            .unwrap();
 
         let list = database.list_conversations().unwrap();
         assert_eq!(list[0].id, first.id);
@@ -627,7 +647,12 @@ mod tests {
             .unwrap();
         assert_eq!(blanked.title, crate::models::UNNAMED_CONVERSATION_TITLE);
 
-        assert!(database.rename_conversation("conv_missing", "x").unwrap().is_none());
+        assert!(
+            database
+                .rename_conversation("conv_missing", "x")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -636,8 +661,12 @@ mod tests {
         let doomed = database.create_conversation(Default::default()).unwrap();
         let kept = database.create_conversation(Default::default()).unwrap();
 
-        database.append_message(user_message(&doomed.id, "会被删掉")).unwrap();
-        database.append_message(user_message(&kept.id, "要留着")).unwrap();
+        database
+            .append_message(user_message(&doomed.id, "会被删掉"))
+            .unwrap();
+        database
+            .append_message(user_message(&kept.id, "要留着"))
+            .unwrap();
 
         database.delete_conversation(&doomed.id).unwrap();
 
@@ -658,7 +687,10 @@ mod tests {
             .append_message(user_message(&conversation.id, "第二句"))
             .unwrap();
 
-        let updated = database.get_conversation(&conversation.id).unwrap().unwrap();
+        let updated = database
+            .get_conversation(&conversation.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.title, "帮我梳理一下流程");
     }
 
@@ -676,7 +708,10 @@ mod tests {
             })
             .unwrap();
 
-        let updated = database.get_conversation(&conversation.id).unwrap().unwrap();
+        let updated = database
+            .get_conversation(&conversation.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(updated.title, DEFAULT_CONVERSATION_TITLE);
     }
 
@@ -731,10 +766,18 @@ mod tests {
 
         assert_eq!(patched.status, "aborted");
         assert_eq!(patched.content, "半句话");
-        assert!(database
-            .update_message("msg_missing", MessagePatch { content: Some("x".into()), status: None })
-            .unwrap()
-            .is_none());
+        assert!(
+            database
+                .update_message(
+                    "msg_missing",
+                    MessagePatch {
+                        content: Some("x".into()),
+                        status: None
+                    }
+                )
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -742,7 +785,9 @@ mod tests {
         let database = database();
         let conversation = database.create_conversation(Default::default()).unwrap();
         for content in ["第一条", "第二条", "第三条"] {
-            database.append_message(user_message(&conversation.id, content)).unwrap();
+            database
+                .append_message(user_message(&conversation.id, content))
+                .unwrap();
         }
 
         let texts: Vec<String> = database
@@ -894,7 +939,9 @@ mod tests {
     fn reset_clears_data_but_keeps_the_schema_version() {
         let database = database();
         let conversation = database.create_conversation(Default::default()).unwrap();
-        database.append_message(user_message(&conversation.id, "你好")).unwrap();
+        database
+            .append_message(user_message(&conversation.id, "你好"))
+            .unwrap();
         database
             .save_persona(&PersonaConfig {
                 assistant_name: "改过的".into(),

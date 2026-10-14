@@ -110,3 +110,42 @@ test('package.json 暴露了方案第 7 节要求的三类测试入口', () => {
   assert.match(scripts['test:unit'], /vitest/);
   assert.match(scripts['test:contract'], /node --test/);
 });
+
+test('lint 覆盖了 TypeScript 与 Rust 格式', () => {
+  const pkg = JSON.parse(read('package.json'));
+  const scripts = pkg.scripts ?? {};
+
+  assert.match(scripts.lint ?? '', /typecheck/, 'lint 应包含 TypeScript 检查');
+  assert.match(scripts.lint ?? '', /lint:rust/, 'lint 应包含 Rust 格式检查');
+  assert.match(
+    scripts['lint:rust'] ?? '',
+    /cargo fmt[\s\S]*--check/,
+    'Rust 格式检查必须用 --check（只校验，不顺手改文件）'
+  );
+  assert.match(
+    scripts['test:all'] ?? '',
+    /lint/,
+    'test:all 应把 lint 串进去，否则格式问题不会被发现'
+  );
+});
+
+test('前端做了代码分割，且设置页是按需加载的', () => {
+  const viteConfig = read('vite.config.ts');
+
+  // Vite 8 用 rolldown，这里是它的拆包字段
+  assert.match(
+    viteConfig,
+    /rolldownOptions[\s\S]*codeSplitting[\s\S]*groups/,
+    '需要配置拆包分组：不拆的话所有依赖会挤进一个 chunk，超过 500 KB 只会报个看不出所以然的警告'
+  );
+  assert.match(viteConfig, /vendor-react/, 'react 应单独成组');
+
+  // 设置页带着表单库，不该拖累首屏
+  const app = read('src/App.tsx');
+  assert.match(app, /lazy\(/, '设置页应按需加载');
+  assert.match(app, /Suspense/, '按需加载需要 Suspense 兜底，否则加载期间是白屏');
+  assert.ok(
+    !/^import \{ SettingsPanel \}/m.test(app),
+    'SettingsPanel 不该被静态引入，否则按需加载就白做了'
+  );
+});

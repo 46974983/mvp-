@@ -1,6 +1,6 @@
 [package]
 name = "desktop-ai-assistant"
-version = "0.2.0"
+version = "0.3.0"
 description = "桌面 AI 助手 —— Tauri 桌面外壳（阶段 B / C）"
 authors = ["desktop-ai-assistant"]
 license = "MIT"

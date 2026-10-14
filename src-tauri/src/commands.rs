@@ -307,9 +307,9 @@ pub async fn stream_chat(
     on_event: Channel<StreamEvent>,
 ) -> Result<StreamResult, String> {
     let secrets = state.secrets.clone();
-    let api_key = blocking(move || secrets.load())
-        .await?
-        .ok_or_else(|| AppError::Invalid("尚未保存 API Key，请先在设置里填写。".to_string()).to_string())?;
+    let api_key = blocking(move || secrets.load()).await?.ok_or_else(|| {
+        AppError::Invalid("尚未保存 API Key，请先在设置里填写。".to_string()).to_string()
+    })?;
 
     let db = state.db.clone();
     let settings = blocking(move || db.get_settings()).await?;
@@ -391,7 +391,11 @@ pub async fn set_close_to_tray(state: State<'_, AppState>, enabled: bool) -> Res
     state.window.set_close_to_tray(enabled);
     log::info!(
         "关闭行为已更新：{}",
-        if enabled { "缩到托盘" } else { "退出应用" }
+        if enabled {
+            "缩到托盘"
+        } else {
+            "退出应用"
+        }
     );
     Ok(())
 }

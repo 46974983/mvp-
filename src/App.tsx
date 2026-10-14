@@ -1,13 +1,27 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import type { Conversation } from '@/types';
 import { Titlebar, type AppPage } from '@/components/layout/Titlebar';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { ChatPanel } from '@/components/chat/ChatPanel';
-import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { AppToaster } from '@/components/feedback/AppToaster';
 import { ConfirmDialog } from '@/components/feedback/ConfirmDialog';
 import { useChatStore, useConversationsStore, useSettingsStore } from '@/features';
+
+/**
+ * 设置页按需加载。
+ *
+ * 它只在用户点开设置时才需要，却带着 react-hook-form、zod 和 Radix 的开关/标签
+ * 这些只在表单里用到的依赖。放在首屏 chunk 里，等于让每次启动都先解析一遍
+ * 大概率用不到的代码。
+ *
+ * 对桌面版来说这不是「省流量」（资源是从本地磁盘读的），省的是启动时的解析与编译。
+ */
+const SettingsPanel = lazy(() =>
+  import('@/components/settings/SettingsPanel').then((module) => ({
+    default: module.SettingsPanel,
+  }))
+);
 
 export default function App() {
   const [page, setPage] = useState<AppPage>('chat');
@@ -92,7 +106,15 @@ export default function App() {
             )}
           </>
         ) : (
-          <SettingsPanel onRequestReset={() => setPendingReset(true)} />
+          <Suspense
+            fallback={
+              <main className="flex flex-1 items-center justify-center text-[13px] text-muted-foreground">
+                正在加载设置…
+              </main>
+            }
+          >
+            <SettingsPanel onRequestReset={() => setPendingReset(true)} />
+          </Suspense>
         )}
       </div>
 

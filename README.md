@@ -41,22 +41,27 @@ npm run dev:desktop
 npx tauri build --no-bundle
 ```
 
-## 测试
+## 测试与检查
 
 ```bash
+npm run lint          # TypeScript 类型检查 + Rust 格式检查（cargo fmt --check）
 npm run test          # 契约 + 单元 + Rust 三类一起跑
-npm run test:contract # node --test：文档契约 / 运行时边界 / 工程结构 / 桌面外壳
+npm run test:contract # node --test：文档契约 / 运行时边界 / 工程结构 / 桌面外壳 / 能力清单
 npm run test:unit     # Vitest：仓储、store、消息流、校验、Markdown、脱敏、环境切换
-npm run test:rust     # cargo test：SQLite 迁移与仓储、凭据存储、SSE 解析、脱敏
+npm run test:rust     # cargo test：SQLite 迁移与仓储、凭据存储、SSE 解析、脱敏、关闭判定
 npm run test:e2e      # 构建后用本机 Chrome 把 MVP 闭环点一遍，自动截图
-npm run test:all      # 全部
+npm run test:all      # 全部（lint + test + e2e）
+
+npm run format:rust   # 格式化 Rust（等价于 cargo fmt --manifest-path src-tauri/Cargo.toml）
 ```
+
+`test:all` 把 `lint` 串在最前面，所以格式问题不会被留到最后才发现。
 
 当前状态（全部通过）：
 
 | 套件 | 命令 | 结果 |
 | --- | --- | --- |
-| 契约 | `npm run test:contract` | **61 项** |
+| 契约 | `npm run test:contract` | **63 项** |
 | 单元 | `npm run test:unit` | **133 项 / 10 文件** |
 | Rust | `npm run test:rust` | **62 项** |
 | 端到端 | `npm run test:e2e` | **56 项检查**，全程无 JS 报错 |
@@ -207,6 +212,32 @@ connect-src ipc: http://ipc.localhost   ← 没有外网出口
 并且仍然在 `<head>` 里同步执行。
 
 开发模式另有一份 `devCsp`，只多放行 Vite 的 HMR 连接。
+
+## 构建产物与代码分割
+
+`npm run build` 现在产出 5 个 JS chunk，没有哪个超过 500 KB：
+
+```text
+vendor-react          219 KB   react / react-dom / scheduler
+index                 151 KB   应用代码与共享依赖
+vendor-ui              87 KB   Radix / sonner / lucide
+SettingsPanel          52 KB   设置页表单（react-hook-form + zod + Switch）
+rolldown-runtime      0.6 KB
+```
+
+两点说明，免得被数字误导：
+
+1. **总体积没有变小**，只是被分开了。「首屏少解析」是真的省 ——
+   设置页那 52 KB 要等用户点开设置才加载。
+2. **对桌面版来说，拆包省的不是流量。** Tauri 的资源是从本地磁盘通过自定义协议读的，
+   没有网络往返。这里真正有价值的是**启动时的解析与编译开销**，
+   以及「谁的体积」在构建报告里能一眼看清。
+
+拆包规则在 `vite.config.ts`，只固定「react」和「UI 库」两个组，**不设兜底组**：
+兜底组看着整齐，实际会把「只有设置页才用的库」也钉进首屏，正好抵消按需加载的收益。
+谁被谁用到，交给打包器按实际引用关系判断。
+
+有契约测试盯住这两件事不被改回去（`前端做了代码分割，且设置页是按需加载的`）。
 
 ## 相对方案做的几个判断
 

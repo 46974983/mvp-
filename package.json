@@ -1,9 +1,9 @@
 {
   "name": "desktop-ai-assistant",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
-  "description": "桌面 AI 助手 MVP · 阶段 A（浏览器可运行，模型层为离线实现）",
+  "description": "桌面 AI 助手 · 阶段 A/B 已完成，阶段 C 进行中（托盘 + 窗口隐藏已接入）",
   "engines": {
     "node": ">=20"
   },
@@ -15,12 +15,15 @@
     "tauri": "tauri",
     "dev:desktop": "tauri dev",
     "build:desktop": "tauri build",
+    "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "lint": "npm run typecheck && npm run lint:rust",
+    "lint:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml --check",
     "test": "npm run test:contract && npm run test:unit && npm run test:rust",
     "test:contract": "node --test \"tests/contract/**/*.test.mjs\"",
     "test:unit": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:e2e": "npm run build && node tests/e2e/ui-flow.check.mjs",
-    "test:all": "npm run test && npm run test:e2e"
+    "test:all": "npm run lint && npm run test && npm run test:e2e"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",

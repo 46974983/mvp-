@@ -120,7 +120,10 @@ mod tests {
         assert!(!store.has().unwrap());
 
         store.save("sk-test-abcdef123456").unwrap();
-        assert_eq!(store.load().unwrap().as_deref(), Some("sk-test-abcdef123456"));
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some("sk-test-abcdef123456")
+        );
         assert!(store.has().unwrap());
 
         store.delete().unwrap();
@@ -140,7 +143,10 @@ mod tests {
         assert!(store.save("   ").is_err());
 
         store.save("  sk-spaced-value-1234  ").unwrap();
-        assert_eq!(store.load().unwrap().as_deref(), Some("sk-spaced-value-1234"));
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some("sk-spaced-value-1234")
+        );
         store.delete().unwrap();
     }
 
@@ -149,7 +155,10 @@ mod tests {
         let store = SecretStore::for_test("overwrite");
         store.save("sk-first-value-1234").unwrap();
         store.save("sk-second-value-5678").unwrap();
-        assert_eq!(store.load().unwrap().as_deref(), Some("sk-second-value-5678"));
+        assert_eq!(
+            store.load().unwrap().as_deref(),
+            Some("sk-second-value-5678")
+        );
         store.delete().unwrap();
     }
 

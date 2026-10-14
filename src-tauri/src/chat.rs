@@ -242,7 +242,10 @@ fn describe_models(body: &str, model_name: &str) -> String {
 
     let wanted = model_name.trim();
     if wanted.is_empty() {
-        return format!("连接成功，凭据有效。服务端报告 {} 个可用模型。", names.len());
+        return format!(
+            "连接成功，凭据有效。服务端报告 {} 个可用模型。",
+            names.len()
+        );
     }
     if names.iter().any(|name| *name == wanted) {
         format!(
