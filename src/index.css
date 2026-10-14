@@ -1,0 +1,322 @@
+/* ============================================================================
+   桌面 AI 助手 · 样式入口
+   ----------------------------------------------------------------------------
+   Tailwind v4 的用法：@theme 里只做「把 CSS 变量注册成工具类」这一件事，
+   真正的颜色值仍然写在 :root / .dark 里。
+   好处：换肤只改变量，不动任何组件；组件里写的是 bg-card、text-muted-foreground
+   这种语义类，而不是 #f5f6f8。
+   ========================================================================== */
+
+@import 'tailwindcss';
+
+/* dark: 前缀的触发条件：html 上有 .dark。用 :where 保证特异性为 0，避免覆盖失控 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------------------------------------------------------------------------
+   语义色板：浅色
+   --------------------------------------------------------------------------- */
+:root {
+  --radius: 0.625rem;
+
+  --background: #f5f6f8;
+  --foreground: #1c1f26;
+
+  --card: #ffffff;
+  --card-foreground: #1c1f26;
+
+  --popover: #ffffff;
+  --popover-foreground: #1c1f26;
+
+  --sidebar: #eceef2;
+  --sidebar-foreground: #1c1f26;
+  --sidebar-accent: #dfe3ea;
+
+  --muted: #f2f4f7;
+  --muted-foreground: #7c8492;
+
+  --primary: #2f6bff;
+  --primary-hover: #2457d6;
+  --primary-foreground: #ffffff;
+
+  --destructive: #e04b4b;
+  --destructive-hover: #c53d3d;
+  --destructive-foreground: #ffffff;
+
+  --success: #1fa971;
+  --warning: #e08b2f;
+
+  --border: #dfe2e8;
+  --input: #ffffff;
+  --ring: #2f6bff;
+
+  --bubble-user: #2f6bff;
+  --bubble-user-foreground: #ffffff;
+  --bubble-assistant: #eef1f6;
+
+  --code-background: #1e222a;
+  --code-foreground: #e6e9ef;
+}
+
+/* ---------------------------------------------------------------------------
+   语义色板：深色
+   --------------------------------------------------------------------------- */
+.dark {
+  --background: #14171c;
+  --foreground: #e8eaee;
+
+  --card: #22262e;
+  --card-foreground: #e8eaee;
+
+  --popover: #262b34;
+  --popover-foreground: #e8eaee;
+
+  --sidebar: #191d23;
+  --sidebar-foreground: #e8eaee;
+  --sidebar-accent: #343b46;
+
+  --muted: #2a2f38;
+  --muted-foreground: #8c94a3;
+
+  --primary: #4a7ff0;
+  --primary-hover: #5d8ef5;
+  --primary-foreground: #ffffff;
+
+  --destructive: #e05b5b;
+  --destructive-hover: #ee6d6d;
+  --destructive-foreground: #ffffff;
+
+  --success: #35b881;
+  --warning: #e09b45;
+
+  --border: #2f353f;
+  --input: #2a2f38;
+  --ring: #4a7ff0;
+
+  --bubble-user: #3d6fe0;
+  --bubble-user-foreground: #ffffff;
+  --bubble-assistant: #262b34;
+
+  --code-background: #12151a;
+  --code-foreground: #d8dde6;
+}
+
+/* ---------------------------------------------------------------------------
+   把变量注册成 Tailwind 工具类
+   用法：bg-card / text-muted-foreground / border-border / rounded-lg ...
+   --------------------------------------------------------------------------- */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-hover: var(--destructive-hover);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-bubble-user: var(--bubble-user);
+  --color-bubble-user-foreground: var(--bubble-user-foreground);
+  --color-bubble-assistant: var(--bubble-assistant);
+
+  --color-code: var(--code-background);
+  --color-code-foreground: var(--code-foreground);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC',
+    'Hiragino Sans GB', sans-serif;
+  --font-mono:
+    'Cascadia Mono', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+}
+
+/* ---------------------------------------------------------------------------
+   基础层
+   --------------------------------------------------------------------------- */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--muted-foreground) 35%, transparent);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--muted-foreground) 55%, transparent);
+    background-clip: content-box;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Markdown 渲染结果的样式
+   为什么用 CSS 而不是在渲染函数里塞 Tailwind 类：
+     renderMarkdown 产出的是 HTML 字符串，它不该知道样式系统长什么样。
+     把排版规则集中在 .markdown 作用域里，样式和解析彻底解耦。
+   --------------------------------------------------------------------------- */
+@layer components {
+  .markdown {
+    word-break: break-word;
+  }
+
+  .markdown > *:first-child {
+    margin-top: 0;
+  }
+  .markdown > *:last-child {
+    margin-bottom: 0;
+  }
+
+  .markdown p {
+    margin: 0 0 0.75em;
+  }
+
+  .markdown strong {
+    font-weight: 600;
+  }
+
+  .markdown a {
+    color: var(--primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .markdown ul,
+  .markdown ol {
+    margin: 0 0 0.75em;
+    padding-left: 1.35em;
+  }
+  .markdown ul {
+    list-style: disc;
+  }
+  .markdown ol {
+    list-style: decimal;
+  }
+  .markdown li {
+    margin: 0.15em 0;
+  }
+  .markdown li > p {
+    margin: 0;
+  }
+
+  .markdown blockquote {
+    margin: 0 0 0.75em;
+    padding: 0.4em 0.9em;
+    border-left: 3px solid var(--border);
+    color: var(--muted-foreground);
+  }
+
+  .markdown h1,
+  .markdown h2,
+  .markdown h3 {
+    margin: 1em 0 0.5em;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+  .markdown h1 {
+    font-size: 1.25em;
+  }
+  .markdown h2 {
+    font-size: 1.15em;
+  }
+  .markdown h3 {
+    font-size: 1.05em;
+  }
+
+  .markdown code.inline-code {
+    padding: 0.1em 0.35em;
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--muted-foreground) 18%, transparent);
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+  }
+
+  .markdown pre.code-block {
+    position: relative;
+    margin: 0 0 0.75em;
+    padding: 0.85em 1em;
+    border-radius: var(--radius-md);
+    background: var(--code-background);
+    color: var(--code-foreground);
+    overflow-x: auto;
+  }
+  .markdown pre.code-block code {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    white-space: pre;
+  }
+  .markdown pre.code-block[data-lang]:not([data-lang=''])::after {
+    content: attr(data-lang);
+    position: absolute;
+    top: 0.5em;
+    right: 0.7em;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    opacity: 0.4;
+    font-family: var(--font-mono);
+  }
+}

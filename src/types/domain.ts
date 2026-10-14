@@ -1,0 +1,108 @@
+/**
+ * 领域类型（Domain Types）
+ * ----------------------------------------------------------------------------
+ * 这一层只描述「业务上有什么东西」，不关心它存在哪里、怎么渲染。
+ * 界面、仓储、模型适配器三边都 import 这里，保证大家对同一个概念的理解一致。
+ *
+ * 对应《docs/TECHNICAL_PLAN.md》第 5 节的三张表：
+ *   Conversation -> conversations 表
+ *   Message      -> messages 表
+ *   AppSettings  -> settings 表
+ */
+
+/** 参与对话的角色。系统提示词不是「消息」，它在请求组装阶段单独注入。 */
+export type MessageRole = 'user' | 'assistant';
+
+/**
+ * 一条消息的生命周期状态。
+ * streaming：正在逐字写入；aborted：用户中途点了停止；error：模型调用失败。
+ * 为什么要存这个：重启后要能看出某条回复是「说完了」还是「被打断了」。
+ */
+export type MessageStatus = 'streaming' | 'complete' | 'aborted' | 'error';
+
+/** 会话（对应 conversations 表） */
+export interface Conversation {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  /** 归档状态。MVP 不做归档 UI，先按技术方案把字段留着，避免以后迁移表结构。 */
+  archived: boolean;
+}
+
+/** 一条消息（对应 messages 表） */
+export interface Message {
+  id: string;
+  conversationId: string;
+  role: MessageRole;
+  content: string;
+  status: MessageStatus;
+  createdAt: number;
+}
+
+/** 模型连接配置。注意：apiKey 永远不落盘，只活在内存里（见 5. 数据与安全）。 */
+export interface ModelConfig {
+  apiUrl: string;
+  apiKey: string;
+  modelName: string;
+}
+
+/** 人格配置（属于 settings 表，非敏感，可以持久化） */
+export interface PersonaConfig {
+  assistantName: string;
+  userName: string;
+  systemPrompt: string;
+}
+
+/**
+ * 模型配置里**可以落盘**的那部分。
+ * 单独定义成一个类型，是为了让「哪几个字段允许被持久化」变成一件编译期就能查的事：
+ * AppSettings 里放的是它，而不是 ModelConfig，于是 apiKey 结构上就没有入口。
+ */
+export interface PersistedModelConfig {
+  apiUrl: string;
+  modelName: string;
+}
+
+/** 全部可持久化的应用设置 */
+export interface AppSettings {
+  persona: PersonaConfig;
+  /** 模型配置的非敏感投影（地址与模型名）。产品设计 3.2 要求「保存本地配置」。 */
+  model: PersistedModelConfig;
+}
+
+/** 主题模式 */
+export type ThemeMode = 'light' | 'dark';
+
+/** 组装给模型的一轮对话 */
+export interface ChatTurn {
+  role: MessageRole;
+  content: string;
+}
+
+/**
+ * 模型请求。
+ * systemPrompt 和 messages 分开两个字段，是刻意的：
+ * 技术方案要求「系统提示词和用户消息在请求组装阶段明确区分」，
+ * 不给它们混进同一个数组的机会。
+ */
+export interface ChatRequest {
+  model: string;
+  systemPrompt: string;
+  messages: ChatTurn[];
+}
+
+/** 面向用户的统一操作结果：只带一句人话，不带堆栈、不带请求头。 */
+export interface OperationResult {
+  ok: boolean;
+  message: string;
+}
+
+/** 流式调用的收尾状态 */
+export type StreamOutcome = 'complete' | 'aborted';
+
+export interface StreamResult {
+  outcome: StreamOutcome;
+  /** 本次累计产出的完整文本（中途停止时是已生成的部分） */
+  text: string;
+}

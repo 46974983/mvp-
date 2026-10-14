@@ -1,181 +1,31 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>桌面 AI 助手 · 界面演示</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>◈</text></svg>">
-  <link rel="stylesheet" href="styles.css">
-</head>
-<body>
-  <div id="app" data-page="chat">
-
-    <!-- ================= 顶栏 ================= -->
-    <header class="titlebar">
-      <div class="titlebar-left">
-        <span class="app-logo">◈</span>
-        <span class="app-name">桌面 AI 助手</span>
-        <span class="demo-badge">界面演示</span>
-      </div>
-
-      <nav class="titlebar-nav">
-        <button class="nav-btn" data-nav="chat">
-          <span class="nav-icon">💬</span>聊天
-        </button>
-        <button class="nav-btn" data-nav="settings">
-          <span class="nav-icon">⚙</span>设置
-        </button>
-      </nav>
-
-      <div class="titlebar-right">
-        <button class="icon-btn" id="btn-theme" title="切换浅色 / 深色">◐</button>
-      </div>
-    </header>
-
-    <!-- ================= 主体 ================= -->
-    <div class="workspace">
-
-      <!-- -------- 左侧：会话列表 -------- -->
-      <aside class="sidebar">
-        <button class="btn primary block" data-action="new-conversation">
-          <span>＋</span> 新建会话
-        </button>
-        <div class="sidebar-label">历史会话</div>
-        <div class="conversation-list" id="conversation-list"></div>
-        <div class="sidebar-foot">
-          <div class="sidebar-foot-line">数据保存在本地</div>
-          <div class="sidebar-foot-line muted">Demo：localStorage</div>
-        </div>
-      </aside>
-
-      <!-- -------- 中间：聊天页 -------- -->
-      <main class="main" data-view="chat">
-        <div class="messages" id="messages"></div>
-
-        <div class="composer">
-          <div class="composer-box">
-            <textarea id="composer-input" rows="1"
-              placeholder="输入消息，回车发送，Shift + 回车换行"></textarea>
-            <div class="composer-actions">
-              <button class="icon-btn" id="btn-stop" title="停止生成" hidden>■</button>
-              <button class="btn primary" id="btn-send">发送</button>
-            </div>
-          </div>
-          <div class="composer-hint">
-            这是模拟演示，回复内容为固定文案，不会调用真实模型。
-          </div>
-        </div>
-      </main>
-
-      <!-- -------- 中间：设置页 -------- -->
-      <main class="main settings" data-view="settings">
-        <div class="settings-scroll">
-
-          <section class="card">
-            <div class="card-head">
-              <h2>模型配置</h2>
-              <p class="card-sub">第一版只支持 OpenAI 兼容接口，填好地址 / Key / 模型名即可。</p>
-            </div>
-
-            <label class="field">
-              <span class="field-label">API 地址</span>
-              <input type="text" id="cfg-api-url" placeholder="https://api.openai.com/v1">
-              <span class="field-hint">兼容 OpenAI 格式的服务都可以，例如 DeepSeek、本地 Ollama。</span>
-            </label>
-
-            <label class="field">
-              <span class="field-label">API Key</span>
-              <div class="field-row">
-                <input type="password" id="cfg-api-key" placeholder="sk-...">
-                <button class="icon-btn" id="btn-toggle-key" title="显示 / 隐藏">👁</button>
-              </div>
-              <span class="field-hint">Key 只保存在本机，不会上传到任何服务器。</span>
-            </label>
-
-            <label class="field">
-              <span class="field-label">模型名称</span>
-              <input type="text" id="cfg-model-name" placeholder="gpt-4o-mini">
-            </label>
-
-            <div class="card-actions">
-              <button class="btn primary" id="btn-test-connection">测试连接</button>
-              <button class="btn" id="btn-save-config">保存配置</button>
-            </div>
-            <div class="test-result" id="test-result"></div>
-          </section>
-
-          <section class="card">
-            <div class="card-head">
-              <h2>人格配置</h2>
-              <p class="card-sub">MVP 版本只用简单文本，不做情绪和记忆系统。</p>
-            </div>
-
-            <div class="field-grid">
-              <label class="field">
-                <span class="field-label">助手名称</span>
-                <input type="text" id="cfg-assistant-name" placeholder="小助">
-              </label>
-              <label class="field">
-                <span class="field-label">用户称呼</span>
-                <input type="text" id="cfg-user-name" placeholder="老大">
-              </label>
-            </div>
-
-            <label class="field">
-              <span class="field-label">系统提示词</span>
-              <textarea id="cfg-system-prompt" rows="4"
-                placeholder="你是一个……"></textarea>
-              <span class="field-hint">这段文字会在每次对话时优先发给模型，用来固定助手的人格。</span>
-            </label>
-
-            <div class="card-actions">
-              <button class="btn primary" id="btn-save-persona">保存人格</button>
-            </div>
-          </section>
-
-          <section class="card">
-            <div class="card-head">
-              <h2>数据目录</h2>
-              <p class="card-sub">MVP 原则：数据默认保存在本地。</p>
-            </div>
-            <div class="path-box" id="data-dir-path"></div>
-            <div class="card-actions">
-              <button class="btn danger" id="btn-reset-data">重置全部本地数据</button>
-            </div>
-          </section>
-
-        </div>
-      </main>
-    </div>
-
-    <!-- ================= 删除确认弹窗 ================= -->
-    <div class="dialog-mask" id="confirm-dialog" hidden>
-      <div class="dialog">
-        <h3>删除会话</h3>
-        <p id="confirm-text"></p>
-        <div class="dialog-actions">
-          <button class="btn" id="confirm-cancel">取消</button>
-          <button class="btn danger" id="confirm-delete">删除</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ================= 重置确认弹窗 ================= -->
-    <div class="dialog-mask" id="reset-dialog" hidden>
-      <div class="dialog">
-        <h3>重置本地数据</h3>
-        <p>这会清空全部会话记录和配置，且无法恢复。确定继续吗？</p>
-        <div class="dialog-actions">
-          <button class="btn" id="reset-cancel">取消</button>
-          <button class="btn danger" id="reset-delete">确定重置</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ================= Toast ================= -->
-    <div class="toast" id="toast"></div>
-  </div>
-
-  <script type="module" src="app.js"></script>
-</body>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>桌面 AI 助手</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>◈</text></svg>"
+    />
+    <script>
+      // 在首屏绘制前定好主题，避免浅色闪一下再变深色。
+      // 主题不是敏感信息，放在 localStorage 是允许的；API Key 不在此列。
+      (function () {
+        try {
+          var saved = localStorage.getItem('desktop-ai-assistant:theme');
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var theme = saved === 'light' || saved === 'dark' ? saved : prefersDark ? 'dark' : 'light';
+          document.documentElement.classList.toggle('dark', theme === 'dark');
+          document.documentElement.dataset.theme = theme;
+        } catch (error) {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
