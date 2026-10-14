@@ -1,11 +1,14 @@
 /**
  * 存储层出口
  * ----------------------------------------------------------------------------
- * 全应用只从这一个文件拿 StorageService。阶段 B 要换 SQLite 实现时，
- * 只需要改这里的 createDefaultStorage，其他地方一行不用动。
+ * 全应用只从这一个文件拿 StorageService。这是「阶段 A → 阶段 B 换存储实现」
+ * 那句话唯一的落点：桌面环境走 SQLite，浏览器环境走 Web Storage，
+ * 上层的 store 和组件一行都不用改。
  */
 
+import { isTauriRuntime } from '../runtime';
 import { createBrowserStorage, type StorageLike } from './browser-storage';
+import { createTauriStorage } from './tauri-storage';
 import type { StorageService } from './types';
 
 export {
@@ -16,6 +19,7 @@ export {
   defaultSettings,
   deriveTitleFromMessage,
 } from './browser-storage';
+export { createTauriStorage } from './tauri-storage';
 export type { StorageLike } from './browser-storage';
 export type {
   AppendMessageInput,
@@ -48,5 +52,6 @@ function resolveWebStorage(): StorageLike {
 }
 
 export function createDefaultStorage(): StorageService {
+  if (isTauriRuntime()) return createTauriStorage();
   return createBrowserStorage(resolveWebStorage());
 }

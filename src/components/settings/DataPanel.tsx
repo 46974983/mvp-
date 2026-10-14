@@ -1,4 +1,4 @@
-import { Database, HardDrive, ShieldCheck, TriangleAlert } from 'lucide-react';
+import { Database, HardDrive, KeyRound, ShieldCheck, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -24,11 +24,29 @@ interface DataPanelProps {
   onRequestReset: () => void;
 }
 
+/**
+ * 数据与安全面板
+ * ----------------------------------------------------------------------------
+ * 这一屏的内容**全部来自服务层的自述**，没有一句是写死的：
+ *   数据放在哪   ← storage.resolveLocation()
+ *   凭据放在哪   ← storage.credentialStorage
+ *   凭据能不能用 ← storage.probeCredentialStorage()
+ *   平台有什么能力 ← platform.capabilities
+ *
+ * 为什么较真到这个程度：同一个界面，浏览器版和桌面版的「事实」是不一样的。
+ * 只要有一句写死的文案，就必然在其中一种环境下撒谎。
+ */
 export function DataPanel({ onRequestReset }: DataPanelProps) {
-  const driverName = useSettingsStore((state) => state.storageDriverName);
-  const description = useSettingsStore((state) => state.storageDescription);
+  const driverName = useSettingsStore((state) => state.driverName);
+  const location = useSettingsStore((state) => state.location);
+  const credentialStorage = useSettingsStore((state) => state.credentialStorage);
+  const credentialStatus = useSettingsStore((state) => state.credentialStatus);
+  const apiKeyStored = useSettingsStore((state) => state.apiKeyStored);
+  const performsNetworkRequest = useSettingsStore((state) => state.performsNetworkRequest);
   const platformId = useSettingsStore((state) => state.platformId);
   const capabilities = useSettingsStore((state) => state.platformCapabilities);
+
+  const keyIsPersisted = credentialStorage.kind === 'os-keychain';
 
   return (
     <>
@@ -44,9 +62,39 @@ export function DataPanel({ onRequestReset }: DataPanelProps) {
               <Database className="size-3.5 text-primary" aria-hidden />
               当前存储实现：{driverName}
             </div>
-            <p data-testid="storage-description" className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground">
-              {description}
+            <p
+              data-testid="storage-location"
+              className="mt-1.5 break-all font-mono text-[11.5px] leading-relaxed text-muted-foreground"
+            >
+              {location?.path ?? '正在读取存储位置…'}
             </p>
+          </div>
+
+          <div className="rounded-lg border border-border p-3.5">
+            <div className="flex items-center gap-2 text-[13px] font-medium">
+              <KeyRound className="size-3.5 text-primary" aria-hidden />
+              API Key 去向：{credentialStorage.label}
+            </div>
+            <p
+              data-testid="credential-storage"
+              data-kind={credentialStorage.kind}
+              className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground"
+            >
+              {credentialStorage.description}
+            </p>
+
+            {apiKeyStored && (
+              <p data-testid="api-key-stored" className="mt-1.5 text-[12px] text-success">
+                当前已保存一份 API Key。
+              </p>
+            )}
+
+            {/* 凭据存储不可用是一种正常状态，值得如实显示，而不是弹错误 */}
+            {credentialStatus && !credentialStatus.ok && (
+              <p data-testid="credential-warning" className="mt-1.5 text-[12px] text-warning">
+                {credentialStatus.message}
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -54,13 +102,29 @@ export function DataPanel({ onRequestReset }: DataPanelProps) {
               <ShieldCheck className="size-3.5 text-success" aria-hidden />
               已生效的安全约束
             </div>
-            <ul className="ml-1 space-y-1 text-[12px] leading-relaxed text-muted-foreground">
-              <li>· API Key 不写入存储、不写入日志，离开页面即失效</li>
+            <ul
+              data-testid="security-constraints"
+              className="ml-1 space-y-1 text-[12px] leading-relaxed text-muted-foreground"
+            >
+              <li>
+                · API Key{' '}
+                {keyIsPersisted
+                  ? `由${credentialStorage.label}加密保管，不写入数据库、不写入日志`
+                  : '不写入存储、不写入日志，刷新页面即失效'}
+              </li>
+              <li>· 数据库表结构与设置键里都不存在 api_key，凭据没有落点</li>
               <li>· 删除会话前一律二次确认，不做「一键静默删除」</li>
               <li>· 系统提示词与用户消息在请求里分属不同字段</li>
               <li>· 对外错误提示经过脱敏，不暴露凭据与请求头</li>
             </ul>
           </div>
+
+          <p className="text-[12px] leading-relaxed text-muted-foreground">
+            模型请求：
+            {performsNetworkRequest
+              ? '由桌面端 Rust 直接发起，WebView 没有外网出口。'
+              : '当前不发起，回答由本地离线实现生成。'}
+          </p>
         </CardContent>
       </Card>
 
@@ -105,7 +169,8 @@ export function DataPanel({ onRequestReset }: DataPanelProps) {
         <CardHeader>
           <CardTitle>重置本地数据</CardTitle>
           <CardDescription>
-            清空全部会话记录、消息、人格配置和模型地址记录。API Key 本来就不落盘，无需清理。
+            清空全部会话记录、消息、人格配置和模型地址记录
+            {keyIsPersisted ? '，并删除本机保存的 API Key' : ''}。此操作无法恢复。
           </CardDescription>
         </CardHeader>
         <CardActions>

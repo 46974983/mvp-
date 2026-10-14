@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Eye, EyeOff, Loader2, PlugZap, Save } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, Loader2, PlugZap, Save, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
@@ -37,24 +37,31 @@ function FieldError({ message }: FieldErrorProps) {
  * 模型配置表单
  * ----------------------------------------------------------------------------
  * 用 React Hook Form + Zod（技术方案第 4 节的要求）。校验规则来自 modelConfigSchema，
- * 和 MockModelProvider 的 testConnection 用的是同一份 —— 所以「表单能存下来的」
+ * 和 provider 的 testConnection 用的是同一份 —— 所以「表单能存下来的」
  * 和「测试连接会通过」的永远一致，不会出现两套标准。
  *
- * 注意这里没有出现任何 @/services 的 import：组件层只认 @/features 这层领域服务。
- * 想换 provider、换存储，都不需要动这个文件。
+ * 这里没有出现任何 @/services 的 import：组件层只认 @/features 这层领域服务。
  *
- * 关于「保存」：阶段 A 里保存只是写进内存。界面上明确说了这件事（见下方说明），
- * 而不是让用户以为已经落盘。这是技术方案第 5 节的硬约束，不在这里打折。
+ * 关于 Key 的文案**不是写死的**，而是读 `credentialStorage`：
+ *   浏览器模式 → 「只留内存，刷新即失效」
+ *   桌面模式   → 「由 Windows 凭据管理器保管」
+ * 同一份界面要如实描述两种事实，靠的只能是「问服务层」，不是靠判断当前是什么阶段。
  */
 export function ModelConfigForm() {
   const modelConfig = useSettingsStore((state) => state.modelConfig);
   const updateModelConfig = useSettingsStore((state) => state.updateModelConfig);
   const testConnection = useSettingsStore((state) => state.testConnection);
-  const platformId = useSettingsStore((state) => state.platformId);
+  const clearApiKey = useSettingsStore((state) => state.clearApiKey);
+
+  const credentialStorage = useSettingsStore((state) => state.credentialStorage);
+  const apiKeyStored = useSettingsStore((state) => state.apiKeyStored);
+  const providerLabel = useSettingsStore((state) => state.providerLabel);
 
   const [showKey, setShowKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const keyIsPersisted = credentialStorage.kind === 'os-keychain';
 
   const {
     register,
@@ -80,7 +87,11 @@ export function ModelConfigForm() {
   const onSubmit = handleSubmit(async (values) => {
     await updateModelConfig(values);
     setTestResult(null);
-    toast.success('配置已应用：地址与模型名写入本地，API Key 只保留在本次会话。');
+    toast.success(
+      keyIsPersisted
+        ? '配置已保存：地址与模型名写入本地，API Key 交给系统凭据管理器。'
+        : '配置已应用：地址与模型名写入本地，API Key 只保留在本次会话。'
+    );
   });
 
   async function handleTest() {
@@ -100,12 +111,19 @@ export function ModelConfigForm() {
     }
   }
 
+  async function handleClearKey() {
+    await clearApiKey();
+    setTestResult(null);
+    toast.success('已清除本机保存的 API Key');
+  }
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>模型配置</CardTitle>
         <CardDescription>
           第一版只接 OpenAI 兼容接口，填地址 / Key / 模型名即可。
+          当前由「{providerLabel}」负责发起请求。
         </CardDescription>
       </CardHeader>
 
@@ -122,7 +140,7 @@ export function ModelConfigForm() {
           />
           <FieldError message={errors.apiUrl?.message} />
           <p className="text-[11px] text-muted-foreground">
-            兼容 OpenAI 格式的服务都可以，例如 DeepSeek、本地 Ollama。
+            兼容 OpenAI 格式的服务都可以，例如 DeepSeek、本地 Ollama。地址以 /v1 结尾。
           </p>
         </div>
 
@@ -133,7 +151,7 @@ export function ModelConfigForm() {
               id="cfg-api-key"
               data-testid="model-api-key"
               type={showKey ? 'text' : 'password'}
-              placeholder="sk-..."
+              placeholder={apiKeyStored ? '已保存，留空则沿用' : 'sk-...'}
               autoComplete="off"
               aria-invalid={Boolean(errors.apiKey)}
               className="pr-9"
@@ -157,9 +175,40 @@ export function ModelConfigForm() {
             </Button>
           </div>
           <FieldError message={errors.apiKey?.message} />
-          <p className="text-[11px] text-muted-foreground">
-            Key 只留在内存里：不写入本地存储、不写进日志、刷新即清空。阶段 B 由系统安全存储接管。
+
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            {credentialStorage.description}
           </p>
+
+          {/* 只在「确实存进去了」时才显示已保存状态。浏览器模式下它永远是未保存。 */}
+          {keyIsPersisted && (
+            <div
+              data-testid="api-key-status"
+              data-stored={apiKeyStored ? 'true' : 'false'}
+              className="flex items-center gap-1.5 text-[11px]"
+            >
+              {apiKeyStored ? (
+                <>
+                  <ShieldCheck className="size-3 text-success" aria-hidden />
+                  <span className="text-success">已保存到{credentialStorage.label}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    data-testid="clear-api-key"
+                    className="h-5 px-1.5 text-[11px]"
+                    onClick={() => void handleClearKey()}
+                  >
+                    清除
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <KeyRound className="size-3 text-muted-foreground" aria-hidden />
+                  <span className="text-muted-foreground">尚未保存 API Key</span>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="space-y-1.5">
@@ -199,7 +248,6 @@ export function ModelConfigForm() {
           <Save className="size-3.5" aria-hidden />
           保存配置
         </Button>
-        <span className="ml-auto text-[11px] text-muted-foreground">平台实现：{platformId}</span>
       </CardActions>
 
       {testResult && (

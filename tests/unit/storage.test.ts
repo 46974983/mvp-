@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createBrowserStorage,
   DEFAULT_CONVERSATION_TITLE,
+  DEFAULT_PERSONA,
   defaultSettings,
   deriveTitleFromMessage,
 } from '@/services/storage';
@@ -271,5 +272,61 @@ describe('标题推导规则', () => {
     expect(deriveTitleFromMessage('   ')).toBe(DEFAULT_CONVERSATION_TITLE);
     expect(deriveTitleFromMessage('短标题')).toBe('短标题');
     expect(deriveTitleFromMessage('一'.repeat(40))).toHaveLength(19);
+  });
+});
+
+describe('模型配置与凭据去向', () => {
+  it('saveModelConfig 只落非敏感投影，Key 不进存储', async () => {
+    const { webStorage, storage } = setup();
+
+    await storage.settings.saveModelConfig({
+      apiUrl: 'https://api.example.com/v1',
+      apiKey: 'sk-should-not-be-stored-anywhere',
+      modelName: 'gpt-4o-mini',
+    });
+
+    const persisted = JSON.stringify(webStorage.raw());
+    expect(persisted).toContain('https://api.example.com/v1');
+    expect(persisted).toContain('gpt-4o-mini');
+    expect(persisted).not.toContain('sk-should-not-be-stored-anywhere');
+    expect(persisted).not.toMatch(/apiKey/i);
+  });
+
+  it('保存后的模型投影能被读回来', async () => {
+    const { storage } = setup();
+    await storage.settings.saveModelConfig({
+      apiUrl: 'https://api.example.com/v1',
+      apiKey: '',
+      modelName: 'my-model',
+    });
+
+    const settings = await storage.settings.getSettings();
+    expect(settings.model.apiUrl).toBe('https://api.example.com/v1');
+    expect(settings.model.modelName).toBe('my-model');
+    // 人格配置不受影响
+    expect(settings.persona.assistantName).toBe(DEFAULT_PERSONA.assistantName);
+  });
+
+  it('浏览器实现如实声明「凭据只留内存」，且永远报未保存', async () => {
+    const { storage } = setup();
+
+    expect(storage.credentialStorage.kind).toBe('memory');
+    expect(await storage.settings.hasStoredApiKey()).toBe(false);
+
+    // 清空是空操作，但接口必须存在 —— 调用方不该为「我在哪个环境」写分支
+    await storage.settings.clearStoredApiKey();
+    expect(await storage.settings.hasStoredApiKey()).toBe(false);
+  });
+
+  it('数据位置与凭据探针都能给出结论', async () => {
+    const { storage } = setup();
+
+    const location = await storage.resolveLocation();
+    expect(location.path).toContain('localStorage');
+    expect(location.driver).toBe(storage.driverName);
+
+    const probe = await storage.probeCredentialStorage();
+    expect(probe.ok).toBe(true);
+    expect(probe.message.length).toBeGreaterThan(0);
   });
 });

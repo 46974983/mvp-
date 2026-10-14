@@ -33,10 +33,19 @@ export function createLogger(scope: string) {
   };
 }
 
-/** 把任意异常转成一句能展示给用户的话，顺带脱敏 */
+/**
+ * 把任意异常转成一句能展示给用户的话，顺带脱敏。
+ *
+ * 为什么要单独认字符串：桌面版（Tauri）的命令失败时，Promise 是被一个
+ * **字符串**拒绝的，而不是 Error。只判断 `instanceof Error` 会把 Rust 侧
+ * 精心写好的中文提示丢掉，换成一句笼统的兜底文案 —— 那等于白写。
+ */
 export function toUserFacingError(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return redactSensitive(error.message);
+  }
+  if (typeof error === 'string' && error.trim().length > 0) {
+    return redactSensitive(error);
   }
   return fallback;
 }

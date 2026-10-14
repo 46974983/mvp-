@@ -1,0 +1,252 @@
+//! 领域类型与领域规则
+//!
+//! 字段名对前端一律用 camelCase（`#[serde(rename_all = "camelCase")]`），
+//! 对数据库一律用 snake_case。转换只在这一层发生，两边都不用迁就对方。
+
+use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// 领域规则（和前端 src/services/storage/browser-storage.ts 里的规则保持一致，
+// 否则同一个操作在桌面模式和浏览器模式会得到不同结果）
+// ---------------------------------------------------------------------------
+
+/// 新会话的默认标题，也是「首条消息自动命名」的触发条件
+pub const DEFAULT_CONVERSATION_TITLE: &str = "新会话";
+/// 标题全是空白时的兜底
+pub const UNNAMED_CONVERSATION_TITLE: &str = "未命名会话";
+/// 自动命名时标题的最大字符数
+const AUTO_TITLE_MAX_LENGTH: usize = 18;
+
+pub const DEFAULT_ASSISTANT_NAME: &str = "小枢";
+pub const DEFAULT_USER_NAME: &str = "老大";
+pub const DEFAULT_SYSTEM_PROMPT: &str =
+    "你是一个运行在本地桌面上的助手。回答先给结论，再补必要细节；不确定就直说不确定，不要编。";
+pub const DEFAULT_API_URL: &str = "https://api.openai.com/v1";
+pub const DEFAULT_MODEL_NAME: &str = "gpt-4o-mini";
+
+/// 去掉首尾空白；全空白则回退到「未命名会话」
+pub fn normalize_title(title: &str) -> String {
+    let trimmed = title.trim();
+    if trimmed.is_empty() {
+        UNNAMED_CONVERSATION_TITLE.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// 从首条用户消息推导会话标题：取首行、去空白、过长截断
+pub fn derive_title_from_message(content: &str) -> String {
+    let first_line = content.lines().next().unwrap_or("").trim();
+    if first_line.is_empty() {
+        return DEFAULT_CONVERSATION_TITLE.to_string();
+    }
+    let characters: Vec<char> = first_line.chars().collect();
+    if characters.len() > AUTO_TITLE_MAX_LENGTH {
+        let head: String = characters.iter().take(AUTO_TITLE_MAX_LENGTH).collect();
+        format!("{head}…")
+    } else {
+        first_line.to_string()
+    }
+}
+
+/// 设置项的键名。集中在这里，避免键名散落在 SQL 字符串里
+pub mod setting_keys {
+    pub const PERSONA_ASSISTANT_NAME: &str = "persona.assistant_name";
+    pub const PERSONA_USER_NAME: &str = "persona.user_name";
+    pub const PERSONA_SYSTEM_PROMPT: &str = "persona.system_prompt";
+    pub const MODEL_API_URL: &str = "model.api_url";
+    pub const MODEL_NAME: &str = "model.model_name";
+}
+
+// ---------------------------------------------------------------------------
+// 领域类型
+// ---------------------------------------------------------------------------
+
+/// 会话（conversations 表）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conversation {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub archived: bool,
+}
+
+/// 一条消息（messages 表）。
+///
+/// `role` 和 `status` 用字符串而不是枚举：合法取值由数据库的 CHECK 约束兜底，
+/// 这样前端传进来一个没见过的值会被数据库拦住，而不是在反序列化时抛出一个
+/// 用户看不懂的错。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Message {
+    pub id: String,
+    pub conversation_id: String,
+    pub role: String,
+    pub content: String,
+    pub status: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaConfig {
+    pub assistant_name: String,
+    pub user_name: String,
+    pub system_prompt: String,
+}
+
+/// 模型配置里**允许落到 SQLite** 的那部分。
+/// 单独一个类型，是为了让「哪几个字段可以入库」在类型层面就写死 ——
+/// api_key 没有入口。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedModelConfig {
+    pub api_url: String,
+    pub model_name: String,
+}
+
+/// 全部可持久化的应用设置
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub persona: PersonaConfig,
+    pub model: PersistedModelConfig,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            persona: PersonaConfig {
+                assistant_name: DEFAULT_ASSISTANT_NAME.to_string(),
+                user_name: DEFAULT_USER_NAME.to_string(),
+                system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+            },
+            model: PersistedModelConfig {
+                api_url: DEFAULT_API_URL.to_string(),
+                model_name: DEFAULT_MODEL_NAME.to_string(),
+            },
+        }
+    }
+}
+
+/// 前端传来的完整模型配置（含 Key）。
+/// 它只作为命令的参数出现，**不会**被写进数据库，也没有对应的表。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfig {
+    pub api_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    pub model_name: String,
+}
+
+impl ModelConfig {
+    /// 取出可以入库的投影
+    pub fn projection(&self) -> PersistedModelConfig {
+        PersistedModelConfig {
+            api_url: self.api_url.clone(),
+            model_name: self.model_name.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateConversationInput {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<i64>,
+    #[serde(default)]
+    pub archived: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppendMessageInput {
+    pub conversation_id: String,
+    pub role: String,
+    pub content: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessagePatch {
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+}
+
+/// 面向用户的操作结果：一句人话，不带堆栈、不带请求头
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationResult {
+    pub ok: bool,
+    pub message: String,
+}
+
+/// 数据放在哪：设置页要如实告诉用户
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageLocation {
+    /// 数据库文件的绝对路径
+    pub database_path: String,
+    /// 存储实现的说明
+    pub driver: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_title_falls_back_when_blank() {
+        assert_eq!(normalize_title("   "), UNNAMED_CONVERSATION_TITLE);
+        assert_eq!(normalize_title("  讨论计划  "), "讨论计划");
+    }
+
+    #[test]
+    fn derive_title_takes_first_line() {
+        assert_eq!(derive_title_from_message("第一行\n第二行"), "第一行");
+    }
+
+    #[test]
+    fn derive_title_falls_back_for_blank_content() {
+        assert_eq!(
+            derive_title_from_message("   \n  "),
+            DEFAULT_CONVERSATION_TITLE
+        );
+    }
+
+    #[test]
+    fn derive_title_truncates_by_characters() {
+        let long = "一".repeat(40);
+        let title = derive_title_from_message(&long);
+        assert_eq!(title.chars().count(), AUTO_TITLE_MAX_LENGTH + 1);
+        assert!(title.ends_with('…'));
+    }
+
+    #[test]
+    fn model_config_projection_has_no_key() {
+        let config = ModelConfig {
+            api_url: "https://api.example.com/v1".into(),
+            api_key: "sk-should-not-be-persisted".into(),
+            model_name: "gpt-4o-mini".into(),
+        };
+        let json = serde_json::to_string(&config.projection()).unwrap();
+        assert!(!json.contains("sk-should-not-be-persisted"));
+        assert!(!json.to_lowercase().contains("apikey"));
+    }
+
+    #[test]
+    fn default_settings_match_the_frontend_defaults() {
+        let settings = AppSettings::default();
+        assert_eq!(settings.persona.assistant_name, DEFAULT_ASSISTANT_NAME);
+        assert_eq!(settings.model.api_url, DEFAULT_API_URL);
+    }
+}

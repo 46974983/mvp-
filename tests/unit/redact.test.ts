@@ -35,11 +35,24 @@ describe('用户可见的错误提示', () => {
     );
   });
 
-  it('拿不到可用信息时用兜底文案，而不是把 undefined 显示给用户', () => {
+  it('字符串形式的错误照样透传 —— 桌面端命令失败时拒绝的就是字符串', () => {
+    // 如果这里退化成兜底文案，Rust 侧写好的中文提示就全丢了
+    expect(toUserFacingError('尚未保存 API Key，请先在设置里填写。', '兜底文案')).toBe(
+      '尚未保存 API Key，请先在设置里填写。'
+    );
+    expect(toUserFacingError('  ', '兜底文案')).toBe('兜底文案');
+  });
+
+  it('字符串形式的错误也要脱敏', () => {
+    expect(toUserFacingError('请求失败 sk-abcdef123456', '兜底')).toBe('请求失败 sk-***');
+  });
+
+  it('拿不到可用信息时用兜底文案，而不是把 null 显示给用户', () => {
     expect(toUserFacingError(new Error('   '), '生成回复时出了点问题，请重试。')).toBe(
       '生成回复时出了点问题，请重试。'
     );
-    expect(toUserFacingError('随便一个字符串', '兜底文案')).toBe('兜底文案');
     expect(toUserFacingError(null, '兜底文案')).toBe('兜底文案');
+    expect(toUserFacingError(undefined, '兜底文案')).toBe('兜底文案');
+    expect(toUserFacingError({ weird: true }, '兜底文案')).toBe('兜底文案');
   });
 });

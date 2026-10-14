@@ -28,12 +28,18 @@ describe('启动时的默认值', () => {
     expect(store.getState().loaded).toBe(true);
   });
 
-  it('向界面暴露真实的存储与平台信息，而不是硬编码文案', () => {
+  it('向界面暴露真实的存储与平台信息，而不是硬编码文案', async () => {
     const { store } = setup();
-    expect(store.getState().storageDriverName.length).toBeGreaterThan(0);
-    expect(store.getState().storageDescription).toContain('API Key');
+    await store.getState().load();
+
+    expect(store.getState().driverName.length).toBeGreaterThan(0);
     expect(store.getState().platformId).toBe('browser');
     expect(Array.isArray(store.getState().platformCapabilities)).toBe(true);
+
+    // 浏览器模式下凭据只留内存：界面据此显示「刷新即失效」
+    expect(store.getState().credentialStorage.kind).toBe('memory');
+    expect(store.getState().location?.path).toContain('localStorage');
+    expect(store.getState().apiKeyStored).toBe(false);
   });
 });
 
@@ -106,7 +112,7 @@ describe('模型配置：非敏感字段落盘，Key 不落盘', () => {
   it('clearApiKey 只清掉 Key，其余字段保留', async () => {
     const { store } = setup();
     await store.getState().updateModelConfig(VALID_MODEL_CONFIG);
-    store.getState().clearApiKey();
+    await store.getState().clearApiKey();
 
     expect(store.getState().modelConfig.apiKey).toBe('');
     expect(store.getState().modelConfig.apiUrl).toBe(VALID_MODEL_CONFIG.apiUrl);

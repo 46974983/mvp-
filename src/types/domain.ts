@@ -74,6 +74,29 @@ export interface AppSettings {
 /** 主题模式 */
 export type ThemeMode = 'light' | 'dark';
 
+/**
+ * 凭据（API Key）到底存在哪。
+ *
+ * 这不是实现细节，而是**必须如实告诉用户**的事：
+ * 浏览器阶段它只活在内存里，刷新即失效；桌面阶段它进系统凭据管理器。
+ * 把这件事做成一个类型，界面就不会靠「当前是哪个阶段」这种猜测来写文案。
+ */
+export interface CredentialStorageInfo {
+  kind: 'memory' | 'os-keychain';
+  /** 短标签，例如「Windows 凭据管理器」 */
+  label: string;
+  /** 一段完整说明，直接显示在设置页 */
+  description: string;
+}
+
+/** 数据存放位置：设置页要如实展示的东西 */
+export interface StorageLocation {
+  /** 具体路径。浏览器阶段是一句说明而不是路径，所以不叫 path 的字段语义要写清 */
+  path: string;
+  /** 存储实现的名字 */
+  driver: string;
+}
+
 /** 组装给模型的一轮对话 */
 export interface ChatTurn {
   role: MessageRole;

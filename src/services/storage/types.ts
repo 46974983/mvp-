@@ -17,9 +17,13 @@
 import type {
   AppSettings,
   Conversation,
+  CredentialStorageInfo,
   Message,
   MessageRole,
   MessageStatus,
+  ModelConfig,
+  OperationResult,
+  StorageLocation,
 } from '@/types';
 
 /** 新建会话时的可选覆盖项 */
@@ -67,16 +71,42 @@ export interface ConversationRepository {
 export interface SettingsRepository {
   getSettings(): Promise<AppSettings>;
   saveSettings(settings: AppSettings): Promise<void>;
+
+  /**
+   * 保存完整的模型配置。
+   *
+   * 这是「一个对象进来、两条路出去」的地方：地址和模型名进设置，
+   * API Key 交给**当前运行环境**的凭据存储 ——
+   * 浏览器阶段是「只留内存」，桌面阶段是系统凭据管理器。
+   * 把这件事收在一个方法里，调用方就不需要知道自己在哪个环境。
+   */
+  saveModelConfig(config: ModelConfig): Promise<void>;
+
+  /** 本机是否已经保存过 API Key。浏览器阶段恒为 false。 */
+  hasStoredApiKey(): Promise<boolean>;
+
+  /** 清掉已保存的 API Key（浏览器阶段是空操作） */
+  clearStoredApiKey(): Promise<void>;
 }
 
 /** 存储实现的总入口 */
 export interface StorageService {
   /** 实现名，用于设置页向用户说明「数据到底存在哪」 */
   readonly driverName: string;
-  /** 数据目录 / 存储位置的说明文案 */
+  /** 凭据存在哪：设置页的文案直接用它，不靠猜当前是什么阶段 */
+  readonly credentialStorage: CredentialStorageInfo;
+  /** 一段说明性的位置描述（不含具体路径） */
   describeLocation(): string;
+  /** 具体路径。Tauri 侧要问 Rust 才知道，所以是异步的。 */
+  resolveLocation(): Promise<StorageLocation>;
+  /**
+   * 凭据存储当前是否可用。
+   * 「不可用」是一种正常状态（受限环境里可能就没有凭据管理器），
+   * 所以它返回 ok=false 而不是抛异常 —— 界面需要把它当信息展示。
+   */
+  probeCredentialStorage(): Promise<OperationResult>;
   readonly conversations: ConversationRepository;
   readonly settings: SettingsRepository;
-  /** 清空本实现管理的全部数据 */
+  /** 清空本实现管理的全部数据（含凭据） */
   reset(): Promise<void>;
 }

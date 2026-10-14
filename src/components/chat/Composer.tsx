@@ -14,6 +14,7 @@ export function Composer() {
   const stop = useChatStore((state) => state.stop);
 
   const modelName = useSettingsStore((state) => state.modelConfig.modelName);
+  const performsNetworkRequest = useSettingsStore((state) => state.performsNetworkRequest);
 
   const resize = useCallback(() => {
     const node = textareaRef.current;
@@ -78,9 +79,12 @@ export function Composer() {
           )}
         </div>
 
+        {/* 这行提示必须如实：桌面版会真的发请求，浏览器版不会。
+            判断依据来自服务层的 performsNetworkRequest，不是写死的文案。 */}
         <p data-testid="composer-hint" className="mt-1.5 px-1 text-[11px] text-muted-foreground">
-          阶段 A：回答来自本地模拟，不联网、不调用真实模型。「{modelName}」只是记录下来的配置项，
-          真实请求会在桌面版本里接通。
+          {performsNetworkRequest
+            ? `回答由桌面端（Rust）发起真实请求，模型「${modelName}」。API Key 读取自系统凭据管理器。`
+            : `浏览器模式：回答来自本地模拟，不联网、不调用真实模型。「${modelName}」只是记录下来的配置项。桌面版会接通真实请求。`}
         </p>
       </div>
     </div>

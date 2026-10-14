@@ -1,0 +1,48 @@
+[package]
+name = "desktop-ai-assistant"
+version = "0.2.0"
+description = "桌面 AI 助手 —— Tauri 桌面外壳（阶段 B）"
+authors = ["desktop-ai-assistant"]
+license = "MIT"
+edition = "2024"
+rust-version = "1.90"
+
+[lib]
+name = "desktop_ai_assistant_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.2", features = [] }
+
+[dependencies]
+# 应用外壳
+tauri = { version = "2.12.3", features = [] }
+tauri-plugin-log = "2"
+
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+
+# 本地数据库。bundled：把 SQLite 一起编进来，用户机器上不需要额外装什么
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+# 模型请求。stream 用来逐块读 SSE
+reqwest = { version = "0.13.5", features = ["json", "stream"] }
+futures-util = "0.3.34"
+
+# 凭据安全存储（Windows 走凭据管理器）
+keyring = "4.2.0"
+
+# 其它
+uuid = { version = "1.28.0", features = ["v4"] }
+thiserror = "2.0.21"
+tokio = { version = "1.53.3", features = ["time"] }
+
+[profile.release]
+# 桌面应用宁可编久一点，也不要几十兆的体积
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

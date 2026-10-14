@@ -8,21 +8,11 @@
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>◈</text></svg>"
     />
-    <script>
-      // 在首屏绘制前定好主题，避免浅色闪一下再变深色。
-      // 主题不是敏感信息，放在 localStorage 是允许的；API Key 不在此列。
-      (function () {
-        try {
-          var saved = localStorage.getItem('desktop-ai-assistant:theme');
-          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-          var theme = saved === 'light' || saved === 'dark' ? saved : prefersDark ? 'dark' : 'light';
-          document.documentElement.classList.toggle('dark', theme === 'dark');
-          document.documentElement.dataset.theme = theme;
-        } catch (error) {
-          document.documentElement.dataset.theme = 'light';
-        }
-      })();
-    </script>
+    <!--
+      主题在这里同步定下来，避免首屏浅色闪一下。
+      放在外部文件而不是内联，是为了让桌面版的 CSP 能保持 script-src 'self'。
+    -->
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

@@ -18,7 +18,7 @@
  *   snapshot.settings       ->  settings 表
  */
 
-import type { AppSettings, Conversation, Message } from '@/types';
+import type { AppSettings, Conversation, Message, StorageLocation } from '@/types';
 import { createId } from '@/lib/id';
 import type {
   AppendMessageInput,
@@ -259,19 +259,58 @@ export function createBrowserStorage(storage: StorageLike): StorageService {
     async getSettings() {
       return load().settings;
     },
+
     async saveSettings(next) {
       const snapshot = load();
       snapshot.settings = next;
       save(snapshot);
     },
+
+    async saveModelConfig(config) {
+      // 只落非敏感投影。config 里的 apiKey 到这里就被丢掉了 ——
+      // 不是靠"记得别写进去"，而是这个函数体里根本没有地方放它。
+      const snapshot = load();
+      snapshot.settings = {
+        ...snapshot.settings,
+        model: { apiUrl: config.apiUrl, modelName: config.modelName },
+      };
+      save(snapshot);
+    },
+
+    /** 浏览器阶段没有持久化凭据这回事，恒为 false */
+    async hasStoredApiKey() {
+      return false;
+    },
+
+    async clearStoredApiKey() {
+      // 空操作：本来就没存过。留着这个方法是为了让调用方不需要区分环境。
+    },
   };
 
+  const driverName = 'Web Storage（localStorage）';
+
   return {
-    driverName: 'Web Storage（localStorage）',
+    driverName,
+    credentialStorage: {
+      kind: 'memory',
+      label: '仅内存',
+      description:
+        '当前是浏览器运行模式：API Key 只存在于内存，刷新页面即失效。' +
+        '它不会写入 localStorage、不会写入日志，也不会被发往本应用自己的服务器。' +
+        '桌面版本（Tauri）会改由 Windows 凭据管理器保管。',
+    },
     describeLocation: () =>
-      '阶段 A 的数据存放在浏览器的 localStorage（键名 desktop-ai-assistant:mvp）。' +
-      '阶段 B 接入 Tauri 后，这里会换成应用数据目录下的 SQLite 文件。' +
-      '模型 API Key 不属于本存储范围，任何时候都不会写进这里。',
+      '数据存放在浏览器的 localStorage（键名 desktop-ai-assistant:mvp），' +
+      '结构按 SQLite 的三张表分开放置。桌面版本会改用应用数据目录下的 SQLite 文件。',
+    async resolveLocation(): Promise<StorageLocation> {
+      return { path: '浏览器 localStorage（键名 desktop-ai-assistant:mvp）', driver: driverName };
+    },
+    async probeCredentialStorage() {
+      return {
+        ok: true,
+        message: '浏览器模式不使用系统凭据存储：API Key 只存在于内存。',
+      };
+    },
     conversations,
     settings,
     async reset() {
