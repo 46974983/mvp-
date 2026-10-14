@@ -44,27 +44,68 @@ npx tauri build --no-bundle
 ## 测试与检查
 
 ```bash
+npm run doctor        # 环境体检：先分清「环境限制」和「项目问题」，再谈测试结果
 npm run lint          # TypeScript 类型检查 + Rust 格式检查（cargo fmt --check）
 npm run test          # 契约 + 单元 + Rust 三类一起跑
 npm run test:contract # node --test：文档契约 / 运行时边界 / 工程结构 / 桌面外壳 / 能力清单
 npm run test:unit     # Vitest：仓储、store、消息流、校验、Markdown、脱敏、环境切换
 npm run test:rust     # cargo test：SQLite 迁移与仓储、凭据存储、SSE 解析、脱敏、关闭判定
 npm run test:e2e      # 构建后用本机 Chrome 把 MVP 闭环点一遍，自动截图
-npm run test:all      # 全部（lint + test + e2e）
+npm run test:all      # 全部（doctor + lint + test + e2e）
 
 npm run format:rust   # 格式化 Rust（等价于 cargo fmt --manifest-path src-tauri/Cargo.toml）
 ```
 
-`test:all` 把 `lint` 串在最前面，所以格式问题不会被留到最后才发现。
+`test:all` 的第一步是 `doctor`：环境有问题时，第一行输出就告诉你**是哪一侧的问题**，
+而不是让一堆看不懂的错误信息混在一起。
 
 当前状态（全部通过）：
 
 | 套件 | 命令 | 结果 |
 | --- | --- | --- |
-| 契约 | `npm run test:contract` | **63 项** |
+| 环境体检 | `npm run doctor` | 6 项全通过 |
+| 契约 | `npm run test:contract` | **64 项** |
 | 单元 | `npm run test:unit` | **133 项 / 10 文件** |
 | Rust | `npm run test:rust` | **62 项** |
 | 端到端 | `npm run test:e2e` | **56 项检查**，全程无 JS 报错 |
+
+## 验收前先分清：环境限制 vs 项目问题
+
+这个项目被外部环境验收过一次，报了两个错，结论是「无法严谨宣布验收通过」。
+那两个错**都不是项目的问题**，是执行环境的限制。为了不再重复这种拉扯，有了 `npm run doctor`。
+
+### 两个典型症状
+
+| 报错 | 真实原因 | 怎么确认 |
+| --- | --- | --- |
+| `Could not load @tailwindcss/oxide-win32-x64-msvc`<br>`stream did not contain valid UTF-8` | **环境把二进制当文本读**。`.node` 是 Windows PE 二进制，正常 Node 用 `process.dlopen` 加载它，永远不会去解码成 UTF-8。会报这个错，说明有东西拦了文件读取并按文本解码。 | `npm run doctor` 会校验 PE 文件头（`MZ`）并实际 import 一次。文件头正常 + 加载成功 = 环境问题。 |
+| `Error: spawn EPERM`<br>（`node --test` / Vitest 起不来） | **环境禁止创建子进程**。`node --test` 每个测试文件起一个子进程，Vitest 起 worker 进程，都需要这个能力。 | `npm run doctor` 会真的 spawn 一个 `node -e` 试一次。 |
+
+### 怎么用
+
+```bash
+npm run doctor     # 先看这一行结论
+npm run test:all   # 环境没问题再跑
+```
+
+`doctor` 失败时会直接写清「这通常意味着什么」。比如子进程那条会说：
+*这是执行环境的限制，不是项目问题 —— 请在普通终端里跑测试，或给沙箱放开进程创建权限。*
+
+它检查 6 项：Node 版本、依赖目录、Tailwind 原生模块（含 PE 头校验与真实加载）、
+子进程创建能力、Rust 工具链、前端构建产物（仅提示）。
+
+### 给验收方的建议
+
+在**普通 Windows 终端**（PowerShell 或 cmd，不在任何 AI 沙箱内）执行：
+
+```powershell
+npm install
+npm run test:all
+npx tauri build --no-bundle
+```
+
+重点确认三件事：`doctor` 是否 6 项全绿、前端构建是否**没有 chunk 警告**、
+契约/单元/E2E 是否都能起来。
 
 Rust 侧的凭据测试会**真的读写 Windows 凭据管理器**（用独立的条目名，跑完即删）。
 

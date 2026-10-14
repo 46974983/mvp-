@@ -149,3 +149,30 @@ test('前端做了代码分割，且设置页是按需加载的', () => {
     'SettingsPanel 不该被静态引入，否则按需加载就白做了'
   );
 });
+
+test('环境体检脚本覆盖了两类「环境限制 vs 项目问题」的分辨场景', () => {
+  const pkg = JSON.parse(read('package.json'));
+  assert.ok(pkg.scripts.doctor, '缺少 doctor 入口');
+  assert.match(
+    pkg.scripts['test:all'],
+    /^npm run doctor/,
+    'doctor 应排在 test:all 最前面：环境有问题时，第一个报错就要说清是哪一侧的问题'
+  );
+
+  const doctor = read('scripts/doctor.mjs');
+
+  // 1) 原生模块：出错信息要能把「文件坏了」和「环境读不了二进制」分开
+  assert.match(doctor, /'MZ'/, '原生模块检查应校验 PE 文件头，区分文件损坏与环境读取失败');
+  assert.match(
+    doctor,
+    /valid UTF-8/,
+    '应显式提到 UTF-8 那个报错，并说明它是环境把二进制当文本读的典型症状'
+  );
+
+  // 2) 子进程：node --test 与 Vitest 都依赖它
+  assert.match(doctor, /spawnSync/, '应实际探测能否创建子进程');
+  assert.match(doctor, /EPERM|禁止创建子进程/, '应说明 EPERM 属于执行环境限制');
+
+  // 3) 失败要影响退出码，否则拦不住流水线
+  assert.match(doctor, /process\.exitCode/, '失败必须反映到退出码');
+});

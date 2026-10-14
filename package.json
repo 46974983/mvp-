@@ -12,6 +12,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "doctor": "node scripts/doctor.mjs",
     "tauri": "tauri",
     "dev:desktop": "tauri dev",
     "build:desktop": "tauri build",
@@ -23,7 +24,7 @@
     "test:unit": "vitest run",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:e2e": "npm run build && node tests/e2e/ui-flow.check.mjs",
-    "test:all": "npm run lint && npm run test && npm run test:e2e"
+    "test:all": "npm run doctor && npm run lint && npm run test && npm run test:e2e"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
