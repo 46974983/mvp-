@@ -5,7 +5,7 @@ import type { Conversation } from '@/types';
 import { cn } from '@/lib/utils';
 import { conversationPreview, formatListTime } from '@/lib/time';
 import { Button } from '@/components/ui/button';
-import { useChatStore, useConversationsStore } from '@/features';
+import { useChatStore, useConversationsStore, useSettingsStore } from '@/features';
 
 interface SidebarProps {
   /** 删除动作交给上层统一弹确认框，避免每个列表项各带一个弹窗 */
@@ -20,6 +20,9 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
   const createConversation = useConversationsStore((state) => state.createConversation);
   const renameConversation = useConversationsStore((state) => state.renameConversation);
   const streaming = useChatStore((state) => state.streaming);
+
+  const driverName = useSettingsStore((state) => state.driverName);
+  const credentialStorage = useSettingsStore((state) => state.credentialStorage);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
@@ -191,7 +194,14 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
           <ShieldCheck className="size-3" aria-hidden />
           <span>数据只存在本机</span>
         </div>
-        <div className="mt-0.5">阶段 A：浏览器本地存储</div>
+        {/* 存储实现和 Key 去向都问服务层，不写死「阶段 X：浏览器本地存储」——
+            桌面模式下那句话是错的 */}
+        <div data-testid="sidebar-storage" className="mt-0.5">
+          {driverName}
+          {credentialStorage.kind === 'os-keychain'
+            ? ' · Key 在系统凭据管理器'
+            : ' · Key 仅存内存'}
+        </div>
       </footer>
     </aside>
   );

@@ -37,7 +37,7 @@ const TEMPLATES: Array<(question: string) => string> = [
   (question) =>
     `收到，你说的是「${question}」。
 
-这是**阶段 A 的离线模拟回答**：不联网、不调用任何模型，只为了把界面和流程跑通。按技术方案的约定，真实模型请求会在阶段 B 由 Rust 层接管。
+这是**离线模拟回答**，不联网、不调用任何模型。它只出现在浏览器模式里 —— 想让模型真的回答，用桌面版本，API Key 会交给系统凭据管理器保管。
 
 现在已经跑起来的几件事：
 
@@ -55,7 +55,7 @@ const TEMPLATES: Array<(question: string) => string> = [
 3. 出错时的措辞——要说清「哪一步出错了」，但不说出请求头、Key 这类东西
 
 \`\`\`ts
-// 阶段 B 接上真实模型后，这一段会变成真实的 token 流
+// 桌面模式下，这段循环跑在 Rust 侧，前端只负责把累计文本画出来
 for await (const delta of stream) {
   onDelta(accumulated + delta)
 }
@@ -116,8 +116,8 @@ export class MockModelProvider implements ModelProvider {
       ok: true,
       message:
         `配置格式没问题，模型「${config.modelName}」已记录。` +
-        '当前是阶段 A 的离线模式，本次没有发起任何网络请求；' +
-        '真实连通性会在阶段 B 接入桌面外壳后一并验证。',
+        '当前是浏览器的离线模式，本次没有发起任何网络请求；' +
+        '想验证真实连通性，请用桌面版本（npm run dev:desktop，或打包好的 exe）。',
     };
   }
 

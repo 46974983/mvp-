@@ -148,6 +148,16 @@ try {
   check('首次打开没有历史会话', (await page.locator(testId('conversation-item')).count()) === 0);
   check('侧边栏给出空状态提示', await page.getByText('还没有会话').first().isVisible());
   check('主区给出「还没有选中会话」引导', await page.getByText('还没有选中会话').isVisible());
+
+  // 界面文案必须来自运行时事实，不能写死阶段号 —— 那种写法迟早会撒谎
+  check(
+    '顶栏显示的是运行模式而不是写死的阶段号',
+    (await page.locator(testId('runtime-badge')).innerText()).trim() === '浏览器模式'
+  );
+  check(
+    '侧边栏如实说明数据存在哪',
+    (await page.locator(testId('sidebar-storage')).innerText()).includes('localStorage')
+  );
   await shot('01-初始状态');
 
   // =========================================================== 2 新建会话 + 发送 + 流式

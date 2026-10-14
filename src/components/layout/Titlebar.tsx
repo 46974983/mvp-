@@ -1,6 +1,7 @@
 import { MessageSquare, Moon, Settings, Sun } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { useSettingsStore } from '@/features';
 import { useTheme } from '@/hooks/useTheme';
 
 export type AppPage = 'chat' | 'settings';
@@ -20,6 +21,7 @@ export function Titlebar({
   onNavigateBlocked,
 }: TitlebarProps) {
   const { theme, toggle } = useTheme();
+  const platformId = useSettingsStore((state) => state.platformId);
 
   const navItems: Array<{ id: AppPage; label: string; icon: typeof MessageSquare }> = [
     { id: 'chat', label: '聊天', icon: MessageSquare },
@@ -33,8 +35,13 @@ export function Titlebar({
           ◈
         </span>
         <span className="text-[13px] font-semibold text-foreground">桌面 AI 助手</span>
-        <span className="rounded border border-border px-1.5 py-0.5 text-[10px] tracking-wide text-muted-foreground">
-          阶段 A
+        {/* 显示当前运行模式，而不是写死「阶段 X」——
+            阶段会变，写死的徽标迟早变成谎言。运行模式是运行时问出来的事实。 */}
+        <span
+          data-testid="runtime-badge"
+          className="rounded border border-border px-1.5 py-0.5 text-[10px] tracking-wide text-muted-foreground"
+        >
+          {platformId === 'tauri' ? '桌面模式' : '浏览器模式'}
         </span>
       </div>
 

@@ -59,7 +59,7 @@ npm run test:all      # 全部
 | 契约 | `npm run test:contract` | **61 项** |
 | 单元 | `npm run test:unit` | **133 项 / 10 文件** |
 | Rust | `npm run test:rust` | **62 项** |
-| 端到端 | `npm run test:e2e` | **54 项检查**，全程无 JS 报错 |
+| 端到端 | `npm run test:e2e` | **56 项检查**，全程无 JS 报错 |
 
 Rust 侧的凭据测试会**真的读写 Windows 凭据管理器**（用独立的条目名，跑完即删）。
 
