@@ -309,6 +309,18 @@ test('托盘可用性是 Rust 运行时判断的，不是写死的', () => {
   );
 });
 
+test('桌面能力探测包含所有已实现能力', () => {
+  const probe = /pub async fn platform_capabilities\([\s\S]*?\n\}/.exec(rustCommands);
+  assert.ok(probe, '未能找到 platform_capabilities');
+
+  for (const item of CAPABILITY_CHECKLIST.filter((entry) => entry.desktopImplemented)) {
+    assert.ok(
+      probe[0].includes(`"${item.id}".to_string()`),
+      `桌面能力已实现但探测结果未包含 ${item.id}，前端会把对应设置误显示为不支持`
+    );
+  }
+});
+
 test('重置本地数据要顺手撤销系统层面的副作用', () => {
   const resetBlock = /pub async fn reset_all_data[\s\S]*?\n\}/.exec(rustCommands);
   assert.ok(resetBlock, '未能找到 reset_all_data');

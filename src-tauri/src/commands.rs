@@ -422,8 +422,14 @@ pub fn cancel_chat(state: State<'_, AppState>) -> Result<(), String> {
 /// 一旦托盘创建失败，用户点「隐藏到托盘」就会让窗口消失且再也找不回来。
 #[tauri::command]
 pub async fn platform_capabilities(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    // 通知与开机自启都由编译进来的插件提供，程序能跑起来就说明可用 —— 不需要运行时探测
-    let mut capabilities = vec!["notification".to_string(), "autostart".to_string()];
+    // 这些能力的窄命令都已编译并注册；是否实际执行仍由各自的用户设置/授权门禁控制。
+    let mut capabilities = vec![
+        "notification".to_string(),
+        "autostart".to_string(),
+        "global-shortcut".to_string(),
+        "file-read".to_string(),
+        "screenshot".to_string(),
+    ];
 
     // 托盘不一样：图标可能建失败，必须问运行期状态
     if state.window.tray_available() {
