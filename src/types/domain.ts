@@ -129,7 +129,7 @@ export interface FileAccessSettings {
  * 前端这个值表达的是「用户意图」，不是「权限」。
  */
 export interface PermissionSettings {
-  /** 截屏。开启后助手能抓取主屏画面。 */
+  /** 手动截屏。开启后可在设置页抓取并预览主屏画面。 */
   screenshot: boolean;
 }
 

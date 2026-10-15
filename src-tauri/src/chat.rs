@@ -9,11 +9,17 @@
 //! 3. **请求由 Rust 发出。** 前端的 WebView 不需要网络权限，
 //!    这也是「API Key 不留在浏览器里」的实现方式。
 
+use std::future::Future;
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{
+    StreamExt,
+    future::{Either, select},
+};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 
@@ -29,7 +35,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// 本地校验用的最小 Key 长度，和前端表单保持一致
 const MIN_API_KEY_LENGTH: usize = 8;
 
-const USER_AGENT: &str = "desktop-ai-assistant/0.2";
+const USER_AGENT: &str = "desktop-ai-assistant/0.3";
 
 // ---------------------------------------------------------------------------
 // 请求 / 响应类型
@@ -74,17 +80,100 @@ pub struct StreamResult {
 // ---------------------------------------------------------------------------
 
 /// 把用户填的地址和接口路径拼起来
-pub fn endpoint(base: &str, path: &str) -> AppResult<String> {
-    let trimmed = base.trim().trim_end_matches('/');
+pub fn validate_api_url(base: &str) -> AppResult<reqwest::Url> {
+    let trimmed = base.trim();
     if trimmed.is_empty() {
         return Err(AppError::Invalid("请填写 API 地址。".to_string()));
     }
-    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+
+    let url = reqwest::Url::parse(trimmed).map_err(|_| {
+        AppError::Invalid("API 地址格式不正确，请填写完整的 http:// 或 https:// 地址。".into())
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
         return Err(AppError::Invalid(
-            "API 地址需要以 http:// 或 https:// 开头。".to_string(),
+            "API 地址只支持 http:// 或 https://。".to_string(),
         ));
     }
-    Ok(format!("{trimmed}/{path}"))
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AppError::Invalid(
+            "API 地址里不能包含用户名或密码，请把凭据填在 API Key 栏。".to_string(),
+        ));
+    }
+    if url.fragment().is_some() {
+        return Err(AppError::Invalid(
+            "API 地址不能包含片段（# 后面的内容），请填写服务地址本身。".to_string(),
+        ));
+    }
+    if url.query_pairs().any(|(name, _)| {
+        let normalized = name
+            .chars()
+            .filter(|character| !matches!(character, '_' | '-' | '.'))
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        matches!(
+            normalized.as_str(),
+            "key"
+                | "apikey"
+                | "xapikey"
+                | "accesskey"
+                | "accesskeyid"
+                | "awsaccesskeyid"
+                | "token"
+                | "accesstoken"
+                | "refreshtoken"
+                | "securitytoken"
+                | "authorization"
+                | "auth"
+                | "credential"
+                | "credentials"
+                | "secret"
+                | "clientsecret"
+                | "password"
+                | "passphrase"
+                | "signature"
+                | "sig"
+        ) || ["apikey", "token", "credential", "secret", "signature"]
+            .iter()
+            .any(|suffix| normalized.ends_with(suffix))
+    }) {
+        return Err(AppError::Invalid(
+            "API 地址查询参数不能包含 Key、token 或其他凭据，请把凭据填在 API Key 栏。".to_string(),
+        ));
+    }
+    if url.scheme() == "http" {
+        let host = url
+            .host_str()
+            .unwrap_or_default()
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let is_loopback = host.eq_ignore_ascii_case("localhost")
+            || IpAddr::from_str(host)
+                .map(|address| address.is_loopback())
+                .unwrap_or(false);
+        if !is_loopback {
+            return Err(AppError::Invalid(
+                "为避免 API Key 明文传输，HTTP 只允许本机地址；远程服务请使用 HTTPS。".to_string(),
+            ));
+        }
+    }
+    Ok(url)
+}
+
+/// 把用户填的地址和接口路径拼起来
+pub fn endpoint(base: &str, path: &str) -> AppResult<String> {
+    let mut url = validate_api_url(base)?;
+
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| AppError::Invalid("API 地址格式不正确，请检查服务地址。".to_string()))?;
+        segments.pop_if_empty();
+        for segment in path.split('/') {
+            segments.push(segment);
+        }
+    }
+
+    Ok(url.to_string())
 }
 
 /// 组装请求体。
@@ -124,6 +213,41 @@ pub enum SseLine {
     Ignore,
 }
 
+#[derive(Default)]
+struct SseDecoder {
+    pending: Vec<u8>,
+}
+
+impl SseDecoder {
+    fn push(&mut self, chunk: &[u8]) -> Vec<SseLine> {
+        self.pending.extend_from_slice(chunk);
+        let mut lines = Vec::new();
+
+        while let Some(position) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let mut line: Vec<u8> = self.pending.drain(..=position).collect();
+            line.pop();
+            lines.push(parse_sse_bytes(&line));
+        }
+
+        lines
+    }
+
+    fn finish(&mut self) -> Option<SseLine> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        Some(parse_sse_bytes(&std::mem::take(&mut self.pending)))
+    }
+}
+
+fn parse_sse_bytes(bytes: &[u8]) -> SseLine {
+    let line = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    match std::str::from_utf8(line) {
+        Ok(line) => parse_sse_line(line),
+        Err(_) => SseLine::Ignore,
+    }
+}
+
 /// 解析一行 SSE。
 ///
 /// OpenAI 兼容接口的流式格式是每行 `data: {json}`，最后一行 `data: [DONE]`。
@@ -147,6 +271,29 @@ pub fn parse_sse_line(line: &str) -> SseLine {
             .map(SseLine::Delta)
             .unwrap_or(SseLine::Ignore),
         Err(_) => SseLine::Ignore,
+    }
+}
+
+async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(CANCEL_POLL_INTERVAL).await;
+    }
+}
+
+async fn race_with_cancel<F, T>(operation: F, cancel: Arc<AtomicBool>) -> Result<T, ()>
+where
+    F: Future<Output = T>,
+{
+    if cancel.load(Ordering::Relaxed) {
+        return Err(());
+    }
+
+    match select(Box::pin(operation), Box::pin(wait_for_cancel(cancel))).await {
+        Either::Left((value, _)) => Ok(value),
+        Either::Right(((), _)) => Err(()),
     }
 }
 
@@ -183,6 +330,8 @@ fn build_client() -> AppResult<reqwest::Client> {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
+        // API Key 不应跟随服务端重定向发往另一地址或被降级到 HTTP。
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent(USER_AGENT)
         .build()
         .map_err(|error| AppError::Internal(format!("无法初始化网络客户端：{error}")))
@@ -212,7 +361,7 @@ pub async fn test_connection(
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(AppError::from_http_status(status.as_u16(), &body));
+        return Err(AppError::from_http_status(status.as_u16(), &body, api_key));
     }
 
     let body = response.text().await.unwrap_or_default();
@@ -280,22 +429,45 @@ pub async fn stream_chat(
     let url = endpoint(api_url, "chat/completions")?;
     let payload = build_payload(&request);
 
-    let response = build_client()?
+    let send = build_client()?
         .post(&url)
         .bearer_auth(api_key.trim())
         .json(&payload)
-        .send()
-        .await
-        .map_err(|error| AppError::from_reqwest(&error))?;
+        .send();
+
+    let response = match race_with_cancel(send, cancel.clone()).await {
+        Ok(response) => response.map_err(|error| AppError::from_reqwest(&error))?,
+        Err(()) => {
+            return Ok(StreamResult {
+                outcome: "aborted".to_string(),
+                text: String::new(),
+            });
+        }
+    };
+
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(StreamResult {
+            outcome: "aborted".to_string(),
+            text: String::new(),
+        });
+    }
 
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(AppError::from_http_status(status.as_u16(), &body));
+        let body = match race_with_cancel(response.text(), cancel.clone()).await {
+            Ok(body) => body.unwrap_or_default(),
+            Err(()) => {
+                return Ok(StreamResult {
+                    outcome: "aborted".to_string(),
+                    text: String::new(),
+                });
+            }
+        };
+        return Err(AppError::from_http_status(status.as_u16(), &body, api_key));
     }
 
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut decoder = SseDecoder::default();
     let mut accumulated = String::new();
 
     loop {
@@ -314,30 +486,26 @@ pub async fn stream_chat(
             Err(_) => continue,
         };
 
-        buffer.push_str(&String::from_utf8_lossy(&next));
-
-        // SSE 以行为单位，但一行可能被拆在两个 chunk 里，所以要留着残余等下一块
-        while let Some(position) = buffer.find('\n') {
-            let line: String = buffer[..position].trim_end_matches('\r').to_string();
-            buffer.drain(..=position);
-
-            match parse_sse_line(&line) {
-                SseLine::Delta(text) => {
-                    accumulated.push_str(&text);
-                    // 推累计全文：前端不需要自己维护拼接状态
-                    let _ = on_event.send(StreamEvent::Delta {
-                        text: accumulated.clone(),
-                    });
-                }
-                SseLine::Done => {
-                    return Ok(StreamResult {
-                        outcome: "complete".to_string(),
-                        text: accumulated,
-                    });
-                }
-                SseLine::Ignore => {}
+        // 先按字节找行边界，不能对每个网络 chunk 单独做 UTF-8 解码：
+        // chunk 可能刚好切在一个汉字中间。
+        for line in decoder.push(&next) {
+            if apply_sse_line(line, &mut accumulated, on_event) {
+                return Ok(StreamResult {
+                    outcome: "complete".to_string(),
+                    text: accumulated,
+                });
             }
         }
+    }
+
+    // 最后一行 SSE 允许没有换行符，EOF 时也要处理它。
+    if let Some(line) = decoder.finish()
+        && apply_sse_line(line, &mut accumulated, on_event)
+    {
+        return Ok(StreamResult {
+            outcome: "complete".to_string(),
+            text: accumulated,
+        });
     }
 
     // 有些服务端不发 [DONE]，直接断流。这时按「说完了」处理。
@@ -349,6 +517,25 @@ pub async fn stream_chat(
         },
         text: accumulated,
     })
+}
+
+fn apply_sse_line(
+    line: SseLine,
+    accumulated: &mut String,
+    on_event: &Channel<StreamEvent>,
+) -> bool {
+    match line {
+        SseLine::Delta(text) => {
+            accumulated.push_str(&text);
+            // 推累计全文：前端不需要自己维护拼接状态
+            let _ = on_event.send(StreamEvent::Delta {
+                text: accumulated.clone(),
+            });
+            false
+        }
+        SseLine::Done => true,
+        SseLine::Ignore => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +577,10 @@ mod tests {
             endpoint("  https://api.example.com/v1/  ", "models").unwrap(),
             "https://api.example.com/v1/models"
         );
+        assert_eq!(
+            endpoint("https://api.example.com/v1?tenant=demo", "models").unwrap(),
+            "https://api.example.com/v1/models?tenant=demo"
+        );
     }
 
     #[test]
@@ -397,6 +588,56 @@ mod tests {
         assert!(endpoint("", "models").is_err());
         assert!(endpoint("api.example.com/v1", "models").is_err());
         assert!(endpoint("ftp://api.example.com", "models").is_err());
+    }
+
+    #[test]
+    fn endpoint_allows_http_only_for_local_model_services() {
+        assert_eq!(
+            endpoint("http://localhost:11434/v1", "models").unwrap(),
+            "http://localhost:11434/v1/models"
+        );
+        assert_eq!(
+            endpoint("http://127.0.0.2:11434/v1", "models").unwrap(),
+            "http://127.0.0.2:11434/v1/models"
+        );
+        assert!(endpoint("http://api.example.com/v1", "models").is_err());
+    }
+
+    #[test]
+    fn endpoint_does_not_accept_credentials_embedded_in_the_url() {
+        assert!(endpoint("https://user:password@api.example.com/v1", "models").is_err());
+    }
+
+    #[test]
+    fn endpoint_rejects_credentials_in_query_or_fragment() {
+        assert!(endpoint("https://api.example.com/v1?api_key=secret", "models").is_err());
+        assert!(endpoint("https://api.example.com/v1?access-token=secret", "models").is_err());
+        assert!(endpoint("https://api.example.com/v1?X-API-Key=secret", "models").is_err());
+        assert!(endpoint("https://api.example.com/v1?client_secret=secret", "models").is_err());
+        assert!(
+            endpoint(
+                "https://api.example.com/v1?X-Amz-Signature=secret",
+                "models"
+            )
+            .is_err()
+        );
+        assert!(endpoint("https://api.example.com/v1#secret", "models").is_err());
+    }
+
+    #[test]
+    fn endpoint_allows_non_sensitive_query_parameters() {
+        assert_eq!(
+            endpoint("https://api.example.com/v1?tenant=demo", "models").unwrap(),
+            "https://api.example.com/v1/models?tenant=demo"
+        );
+    }
+
+    #[test]
+    fn endpoint_allows_ipv6_loopback_for_local_http_services() {
+        assert_eq!(
+            endpoint("http://[::1]:11434/v1", "models").unwrap(),
+            "http://[::1]:11434/v1/models"
+        );
     }
 
     #[test]
@@ -454,6 +695,51 @@ mod tests {
         // 只有 role 的第一条 chunk，没有内容，不该产生空增量
         let line = r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#;
         assert_eq!(parse_sse_line(line), SseLine::Ignore);
+    }
+
+    #[test]
+    fn sse_decoder_preserves_utf8_split_across_network_chunks() {
+        let line = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n";
+        let bytes = line.as_bytes();
+        let split = line.find("你").unwrap() + 1;
+        let mut decoder = SseDecoder::default();
+
+        assert!(decoder.push(&bytes[..split]).is_empty());
+        assert_eq!(
+            decoder.push(&bytes[split..]),
+            vec![SseLine::Delta("你好".to_string())]
+        );
+    }
+
+    #[test]
+    fn sse_decoder_processes_a_final_line_without_a_newline() {
+        let mut decoder = SseDecoder::default();
+        let line = r#"data: {"choices":[{"delta":{"content":"最后一段"}}]}"#;
+        assert_eq!(decoder.push(line.as_bytes()), Vec::<SseLine>::new());
+        assert_eq!(
+            decoder.finish(),
+            Some(SseLine::Delta("最后一段".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_a_pending_network_operation() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let signal = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            signal.store(true, Ordering::Relaxed);
+        });
+
+        let result = race_with_cancel(std::future::pending::<()>(), cancel).await;
+        assert_eq!(result, Err(()));
+    }
+
+    #[tokio::test]
+    async fn cancellation_race_returns_a_completed_operation() {
+        let result =
+            race_with_cancel(std::future::ready(42), Arc::new(AtomicBool::new(false))).await;
+        assert_eq!(result, Ok(42));
     }
 
     #[test]

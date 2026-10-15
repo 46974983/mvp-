@@ -299,7 +299,7 @@ pub struct GlobalShortcutStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionSettings {
-    /// 截屏。开启后助手能抓取主屏画面。
+    /// 手动截屏。开启后可在设置页抓取并预览主屏画面。
     pub screenshot: bool,
 }
 

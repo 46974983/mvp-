@@ -3,6 +3,7 @@ import { createChatStore } from '@/features/chat/store';
 import { createConversationsStore } from '@/features/conversations/store';
 import { createSettingsStore } from '@/features/settings/store';
 import type { ModelProvider } from '@/services/model';
+import { createBrowserStorage, type StorageService } from '@/services/storage';
 import {
   createBrowserPlatformService,
   type PlatformCapability,
@@ -11,6 +12,7 @@ import {
 import {
   createCapturingProvider,
   createInstantProvider,
+  createMemoryStorage,
   createStepProvider,
   createTestServices,
   waitFor,
@@ -18,9 +20,14 @@ import {
 
 async function setup(
   model: ModelProvider = createInstantProvider('这是模拟回复。'),
-  platform?: PlatformService
+  platform?: PlatformService,
+  storage?: StorageService
 ) {
-  const services = createTestServices({ model, ...(platform ? { platform } : {}) });
+  const services = createTestServices({
+    model,
+    ...(platform ? { platform } : {}),
+    ...(storage ? { storage } : {}),
+  });
   const conversations = createConversationsStore(services);
   const settings = createSettingsStore(services);
   const chat = createChatStore(services, conversations, settings);
@@ -55,6 +62,145 @@ function createNotifyingPlatform(capabilities: PlatformCapability[] = ['notifica
 }
 
 describe('发送消息', () => {
+  it('在首次存储往返完成前就公开忙碌状态，避免切页或重复发送', async () => {
+    const provider = createStepProvider('需要等待的回复');
+    const { chat } = await setup(provider);
+
+    const pending = chat.getState().send('第一条');
+    expect(chat.getState().sending).toBe(true);
+    expect(chat.getState().streaming).toBe(false);
+
+    await waitFor(() => chat.getState().streaming);
+    provider.abort();
+    await pending;
+
+    expect(chat.getState().sending).toBe(false);
+  });
+
+  it('准备阶段停止后保留用户消息，但不启动模型请求', async () => {
+    const provider = createCapturingProvider();
+    const base = createTestServices({ model: provider }).storage;
+    let appendStarted = false;
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    const storage: StorageService = {
+      ...base,
+      conversations: {
+        ...base.conversations,
+        async appendMessage(input) {
+          if (input.role === 'user') {
+            appendStarted = true;
+            await appendGate;
+          }
+          return base.conversations.appendMessage(input);
+        },
+      },
+    };
+    const { chat, conversations } = await setup(provider, undefined, storage);
+
+    const pending = chat.getState().send('这条问题仍要保留');
+    await waitFor(() => appendStarted);
+    expect(chat.getState().sending).toBe(true);
+
+    chat.getState().stop();
+    releaseAppend();
+    await pending;
+
+    expect(provider.captures).toHaveLength(0);
+    expect(chat.getState().lastOutcome).toBe('aborted');
+    expect(chat.getState().sending).toBe(false);
+    expect(conversations.getState().messages.map((message) => message.content)).toEqual([
+      '这条问题仍要保留',
+    ]);
+  });
+
+  it('占位回复创建后加载失败，也会把消息标记为错误而不是遗留 streaming', async () => {
+    const provider = createCapturingProvider();
+    const base = createTestServices({ model: provider }).storage;
+    let messageReads = 0;
+    const storage: StorageService = {
+      ...base,
+      conversations: {
+        ...base.conversations,
+        async listMessages(conversationId) {
+          messageReads += 1;
+          if (messageReads === 2) throw new Error('读取消息失败');
+          return base.conversations.listMessages(conversationId);
+        },
+      },
+    };
+    const { chat, conversations } = await setup(provider, undefined, storage);
+
+    await chat.getState().send('你好');
+
+    const assistant = conversations
+      .getState()
+      .messages.find((message) => message.role === 'assistant');
+    expect(provider.captures).toHaveLength(0);
+    expect(assistant?.status).toBe('error');
+    expect(chat.getState().error).toBe('读取消息失败');
+  });
+
+  it('会话消息加载完成前禁止发送，避免把旧会话上下文带进请求', async () => {
+    const base = createBrowserStorage(createMemoryStorage());
+    const first = await base.conversations.createConversation();
+    await base.conversations.appendMessage({
+      conversationId: first.id,
+      role: 'user',
+      content: '第一个会话的私有上下文',
+      status: 'complete',
+    });
+    const second = await base.conversations.createConversation();
+    await base.conversations.appendMessage({
+      conversationId: second.id,
+      role: 'user',
+      content: '第二个会话的私有上下文',
+      status: 'complete',
+    });
+
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    let targetId = '';
+    const storage: StorageService = {
+      ...base,
+      conversations: {
+        ...base.conversations,
+        async listMessages(conversationId) {
+          if (conversationId === targetId) await readGate;
+          return base.conversations.listMessages(conversationId);
+        },
+      },
+    };
+    const provider = createCapturingProvider();
+    const { chat, conversations } = await setup(provider, undefined, storage);
+    targetId =
+      conversations.getState().activeId === first.id ? second.id : first.id;
+
+    const selecting = conversations.getState().select(targetId);
+    expect(conversations.getState().switchingConversation).toBe(true);
+    await chat.getState().send('不要拿旧上下文发送');
+    expect(provider.captures).toHaveLength(0);
+
+    releaseRead();
+    await selecting;
+    await chat.getState().send('新会话的问题');
+
+    expect(provider.captures[0]?.messages).toEqual([
+      {
+        role: 'user',
+        content:
+          targetId === first.id
+            ? '第一个会话的私有上下文'
+            : '第二个会话的私有上下文',
+      },
+      { role: 'user', content: '新会话的问题' },
+    ]);
+  });
+
   it('没有会话时自动新建一个，用户消息与助手消息都落库', async () => {
     const { chat, conversations } = await setup();
 

@@ -19,7 +19,12 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
   const select = useConversationsStore((state) => state.select);
   const createConversation = useConversationsStore((state) => state.createConversation);
   const renameConversation = useConversationsStore((state) => state.renameConversation);
+  const conversationsLoaded = useConversationsStore((state) => state.loaded);
+  const switchingConversation = useConversationsStore((state) => state.switchingConversation);
+  const sending = useChatStore((state) => state.sending);
   const streaming = useChatStore((state) => state.streaming);
+  const busy = sending || streaming;
+  const controlsDisabled = !conversationsLoaded || busy || switchingConversation;
 
   const driverName = useSettingsStore((state) => state.driverName);
   const credentialStorage = useSettingsStore((state) => state.credentialStorage);
@@ -41,7 +46,7 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
 
   async function commitRename() {
     const id = editingId;
-    if (!id) return;
+    if (!id || controlsDisabled) return;
     setEditingId(null);
     const current = conversations.find((item) => item.id === id);
     if (!current || current.title === draft.trim()) return;
@@ -51,12 +56,16 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
   }
 
   async function handleSelect(id: string) {
-    if (id === activeId) return;
-    if (streaming) {
-      toast.info('正在生成回复，请先停止再切换会话');
+    if (switchingConversation) return;
+    if (busy) {
+      toast.info('正在发送或生成回复，请先停止再切换会话');
       return;
     }
-    await select(id);
+    try {
+      await select(id);
+    } catch {
+      toast.error('读取会话失败，请重试。');
+    }
   }
 
   return (
@@ -69,10 +78,14 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
           variant="primary"
           className="w-full"
           data-testid="new-conversation"
-          disabled={streaming}
+          disabled={controlsDisabled}
           onClick={async () => {
-            await createConversation();
-            toast.success('已新建会话');
+            try {
+              await createConversation();
+              toast.success('已新建会话');
+            } catch {
+              toast.error('新建会话失败，请重试。');
+            }
           }}
         >
           <Plus className="size-3.5" aria-hidden />
@@ -129,6 +142,7 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
                       size="icon-sm"
                       title="确认"
                       data-testid="rename-confirm"
+                      disabled={controlsDisabled}
                       onClick={() => void commitRename()}
                     >
                       <Check className="size-3.5" aria-hidden />
@@ -165,6 +179,7 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
                           size="icon-sm"
                           title="重命名"
                           data-testid="rename-conversation"
+                          disabled={controlsDisabled}
                           onClick={() => startRename(conversation)}
                         >
                           <Pencil className="size-3.5" aria-hidden />
@@ -175,6 +190,7 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
                           title="删除"
                           data-testid="delete-conversation"
                           className="hover:text-destructive"
+                          disabled={controlsDisabled}
                           onClick={() => onRequestDelete(conversation)}
                         >
                           <Trash2 className="size-3.5" aria-hidden />

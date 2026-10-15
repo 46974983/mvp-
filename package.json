@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.3.0",
   "type": "module",
-  "description": "桌面 AI 助手 · 阶段 A/B 已完成，阶段 C 进行中（托盘 + 窗口隐藏已接入）",
+  "description": "桌面 AI 助手 · 阶段 A/B/C 已完成，阶段 D 部分接入（本地文件与手动截屏预览）",
   "engines": {
     "node": ">=20"
   },

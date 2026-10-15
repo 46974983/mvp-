@@ -7,6 +7,7 @@ import { ChatPanel } from '@/components/chat/ChatPanel';
 import { AppToaster } from '@/components/feedback/AppToaster';
 import { ConfirmDialog } from '@/components/feedback/ConfirmDialog';
 import { useChatStore, useConversationsStore, useSettingsStore } from '@/features';
+import { toUserFacingError } from '@/lib/log';
 
 /**
  * 设置页按需加载。
@@ -38,6 +39,8 @@ export default function App() {
   const resetAll = useSettingsStore((state) => state.resetAll);
 
   const streaming = useChatStore((state) => state.streaming);
+  const sending = useChatStore((state) => state.sending);
+  const chatBusy = sending || streaming;
 
   // 启动：把配置和会话一起拉起来。两者互不依赖，并行拿。
   useEffect(() => {
@@ -58,15 +61,39 @@ export default function App() {
     const target = pendingDelete;
     setPendingDelete(null);
     if (!target) return;
-    await deleteConversation(target.id);
-    toast.success('会话已删除');
+    if (chatBusy) {
+      toast.info('正在发送或生成回复，当前不能删除会话');
+      return;
+    }
+    try {
+      await deleteConversation(target.id);
+      toast.success('会话已删除');
+    } catch (error) {
+      toast.error(toUserFacingError(error, '删除会话失败，请重试。'));
+    }
   }
 
   async function confirmReset() {
     setPendingReset(false);
-    await resetAll();
-    await loadConversations();
-    toast.success('本地数据已重置');
+    let resetError: unknown = null;
+    try {
+      await resetAll();
+    } catch (error) {
+      resetError = error;
+    }
+
+    try {
+      // 即使只在最后删除凭据时失败，数据库里的会话也可能已经清空。
+      await loadConversations();
+    } catch (error) {
+      resetError ??= error;
+    }
+
+    if (resetError) {
+      toast.error(toUserFacingError(resetError, '重置本地数据失败，请重试。'));
+    } else {
+      toast.success('本地数据已重置');
+    }
   }
 
   const deleteDescription = (() => {
@@ -89,8 +116,8 @@ export default function App() {
       <Titlebar
         page={page}
         onNavigate={setPage}
-        navigationLocked={streaming}
-        onNavigateBlocked={() => toast.info('正在生成回复，请先停止再切换页面')}
+        navigationLocked={sending || streaming}
+        onNavigateBlocked={() => toast.info('正在发送或生成回复，请先停止再切换页面')}
       />
 
       <div className="flex min-h-0">
@@ -124,6 +151,7 @@ export default function App() {
         title="删除会话"
         description={deleteDescription}
         confirmText="删除"
+        confirmDisabled={chatBusy}
         onConfirm={() => void confirmDelete()}
         onCancel={() => setPendingDelete(null)}
       />

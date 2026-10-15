@@ -21,6 +21,8 @@ export interface ConversationsState {
   messages: Message[];
   /** 首次加载是否完成，用于区分「还没加载」和「真的没有会话」 */
   loaded: boolean;
+  /** 切换会话时正在读取目标消息，读取完成前暂时禁止发送 */
+  switchingConversation: boolean;
 
   load(): Promise<void>;
   select(conversationId: string | null): Promise<void>;
@@ -36,32 +38,63 @@ export type ConversationsStore = UseBoundStore<StoreApi<ConversationsState>>;
 
 export function createConversationsStore(services: Services): ConversationsStore {
   const repo = services.storage.conversations;
+  let selectionVersion = 0;
 
   return create<ConversationsState>((set, get) => ({
     conversations: [],
     activeId: null,
     messages: [],
     loaded: false,
+    switchingConversation: false,
 
     async load() {
+      const version = ++selectionVersion;
       const conversations = await repo.listConversations();
       // 自动恢复最近一次会话：列表已经按 updatedAt 倒序，取第一条即可
       const activeId = conversations[0]?.id ?? null;
       const messages = activeId ? await repo.listMessages(activeId) : [];
-      set({ conversations, activeId, messages, loaded: true });
+      if (version === selectionVersion) {
+        set({ conversations, activeId, messages, loaded: true, switchingConversation: false });
+      }
     },
 
     async select(conversationId) {
-      if (get().activeId === conversationId) return;
-      const messages = conversationId ? await repo.listMessages(conversationId) : [];
-      set({ activeId: conversationId, messages });
+      const version = ++selectionVersion;
+      if (get().activeId === conversationId) {
+        if (get().switchingConversation) set({ switchingConversation: false });
+        return;
+      }
+
+      set({ switchingConversation: true });
+      try {
+        const messages = conversationId ? await repo.listMessages(conversationId) : [];
+        if (version !== selectionVersion) return;
+        set({ activeId: conversationId, messages, switchingConversation: false });
+      } catch (error) {
+        if (version === selectionVersion) set({ switchingConversation: false });
+        throw error;
+      }
     },
 
     async createConversation() {
-      const conversation = await repo.createConversation();
-      const conversations = await repo.listConversations();
-      set({ conversations, activeId: conversation.id, messages: [] });
-      return conversation;
+      const version = ++selectionVersion;
+      set({ switchingConversation: true });
+      try {
+        const conversation = await repo.createConversation();
+        const conversations = await repo.listConversations();
+        if (version === selectionVersion) {
+          set({
+            conversations,
+            activeId: conversation.id,
+            messages: [],
+            switchingConversation: false,
+          });
+        }
+        return conversation;
+      } catch (error) {
+        if (version === selectionVersion) set({ switchingConversation: false });
+        throw error;
+      }
     },
 
     async renameConversation(conversationId, title) {
@@ -72,15 +105,29 @@ export function createConversationsStore(services: Services): ConversationsStore
     },
 
     async deleteConversation(conversationId) {
+      const version = ++selectionVersion;
       const { activeId } = get();
-      await repo.deleteConversation(conversationId);
+      set({ switchingConversation: true });
+      try {
+        await repo.deleteConversation(conversationId);
 
-      const conversations = await repo.listConversations();
-      // 删掉的正是当前会话时，退到列表里的下一条；一条都没有就留空
-      const nextActiveId =
-        activeId === conversationId ? (conversations[0]?.id ?? null) : activeId;
-      const messages = nextActiveId ? await repo.listMessages(nextActiveId) : [];
-      set({ conversations, activeId: nextActiveId, messages });
+        const conversations = await repo.listConversations();
+        // 删掉的正是当前会话时，退到列表里的下一条；一条都没有就留空
+        const nextActiveId =
+          activeId === conversationId ? (conversations[0]?.id ?? null) : activeId;
+        const messages = nextActiveId ? await repo.listMessages(nextActiveId) : [];
+        if (version === selectionVersion) {
+          set({
+            conversations,
+            activeId: nextActiveId,
+            messages,
+            switchingConversation: false,
+          });
+        }
+      } catch (error) {
+        if (version === selectionVersion) set({ switchingConversation: false });
+        throw error;
+      }
     },
 
     async reloadActiveMessages() {

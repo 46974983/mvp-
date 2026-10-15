@@ -38,6 +38,7 @@ function formatBytes(bytes: number): string {
 export function ScreenshotSettings() {
   const capabilities = useSettingsStore((state) => state.platformCapabilities);
   const loaded = useSettingsStore((state) => state.loaded);
+  const platformId = useSettingsStore((state) => state.platformId);
   const enabled = useSettingsStore((state) => state.screenshotEnabled);
   const lastScreenshot = useSettingsStore((state) => state.lastScreenshot);
   const setScreenshotEnabled = useSettingsStore((state) => state.setScreenshotEnabled);
@@ -78,7 +79,8 @@ export function ScreenshotSettings() {
       <CardHeader>
         <CardTitle>截屏</CardTitle>
         <CardDescription>
-          让助手看到你屏幕上的画面。默认关闭，需要你明确开启。
+          在设置页手动抓取主屏并预览。当前不会附加到聊天或发给模型。
+          默认关闭，需要你明确开启。
         </CardDescription>
       </CardHeader>
 
@@ -89,9 +91,13 @@ export function ScreenshotSettings() {
             className="rounded-lg border border-border bg-muted/50 p-3.5 text-[12px] leading-relaxed text-muted-foreground"
           >
             {loaded
-              ? '浏览器抓不了屏幕 —— 网页只能拿到它自己那一页里的东西。桌面版本里这一项可用。'
+              ? platformId === 'browser'
+                ? '浏览器模式不提供截屏能力；桌面模式才有这个开关。'
+                : '桌面端当前没有报告截屏能力，开关不可用。请重启应用后再检查。'
               : '正在探测当前环境的平台能力…'}
-            <p className="mt-1 text-[11px]">桌面版本里能做的事：{spec.description}。</p>
+            {platformId === 'browser' && (
+              <p className="mt-1 text-[11px]">桌面模式支持：{spec.description}。</p>
+            )}
           </div>
         )}
 
@@ -102,16 +108,17 @@ export function ScreenshotSettings() {
               <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden />
               <div className="space-y-1 text-[11px] leading-relaxed text-muted-foreground">
                 <p className="text-foreground/80">
-                  开启后，助手能抓取主屏的整块画面 —— 不只是本窗口，
+                  开启后，你可以手动抓取主屏的整块画面 —— 不只是本窗口，
                   屏幕上当时有什么就会拍到什么，包括其他窗口和通知。
                 </p>
                 <p>截图只在内存里传递，不会写到磁盘上；关掉这个开关时，上一次的画面也会立刻丢弃。</p>
+                <p>当前截图只回到设置页预览，不会自动进入聊天上下文。</p>
               </div>
             </div>
 
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <Label htmlFor="screenshot">允许助手截屏</Label>
+                <Label htmlFor="screenshot">允许手动截屏</Label>
                 <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
                   开关关着的时候，即使有人直接调用截屏命令也会被拒绝。
                 </p>
@@ -176,7 +183,8 @@ export function ScreenshotSettings() {
                   className="mt-2 max-h-56 w-full rounded-md border border-border object-contain"
                 />
                 <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
-                  这张图只在内存里。刷新页面或者关掉开关就没了，磁盘上不会留下任何东西。
+                  这张图只在内存里、只用于设置页预览。刷新页面或者关掉开关就没了，
+                  不会附加到聊天或发给模型，磁盘上也不会留下任何东西。
                 </p>
               </div>
             )}

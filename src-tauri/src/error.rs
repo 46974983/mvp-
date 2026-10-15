@@ -58,7 +58,7 @@ impl AppError {
     ///
     /// 只对状态码说事，附带的响应体片段单独走 `safe_excerpt`：
     /// 既可能包含凭据，也可能把整段请求回显出来。
-    pub fn from_http_status(status: u16, body: &str) -> Self {
+    pub fn from_http_status(status: u16, body: &str, api_key: &str) -> Self {
         let hint = match status {
             400 => "请求被拒绝，请检查模型名称是否正确。",
             401 | 403 => "认证失败，请检查 API Key 是否有效。",
@@ -68,7 +68,18 @@ impl AppError {
             _ => "模型服务返回了错误状态。",
         };
 
-        let excerpt = safe_excerpt(body, EXCERPT_LIMIT);
+        let api_key = api_key.trim();
+        let redacted_body = if api_key.is_empty() {
+            body.to_string()
+        } else {
+            let mask = if api_key.starts_with("sk-") {
+                "sk-***"
+            } else {
+                "***"
+            };
+            body.replace(api_key, mask)
+        };
+        let excerpt = safe_excerpt(&redacted_body, EXCERPT_LIMIT);
         if excerpt.is_empty() {
             AppError::Model(format!("{hint}（HTTP {status}）"))
         } else {
@@ -83,29 +94,39 @@ mod tests {
 
     #[test]
     fn auth_failure_points_at_the_key() {
-        let error = AppError::from_http_status(401, "");
+        let error = AppError::from_http_status(401, "", "");
         assert!(error.to_string().contains("API Key"));
     }
 
     #[test]
     fn wrong_path_points_at_the_url() {
-        let error = AppError::from_http_status(404, "");
+        let error = AppError::from_http_status(404, "", "");
         assert!(error.to_string().contains("/v1"));
     }
 
     #[test]
     fn error_text_never_carries_a_secret() {
         let body = r#"{"error":"bad key sk-abcdef1234567890 rejected"}"#;
-        let error = AppError::from_http_status(401, body);
+        let error = AppError::from_http_status(401, body, "sk-abcdef1234567890");
         let text = error.to_string();
         assert!(!text.contains("sk-abcdef1234567890"));
         assert!(text.contains("sk-***"));
     }
 
     #[test]
+    fn error_text_redacts_unrecognized_api_key_formats() {
+        let api_key = "custom-provider-key-123456";
+        let body = format!("Provider rejected the credential {api_key}");
+        let error = AppError::from_http_status(401, &body, api_key);
+
+        assert!(!error.to_string().contains(api_key));
+        assert!(error.to_string().contains("***"));
+    }
+
+    #[test]
     fn long_bodies_are_excerpted() {
         let body = "x".repeat(2000);
-        let error = AppError::from_http_status(500, &body);
+        let error = AppError::from_http_status(500, &body, "");
         // 300 字上限 + 提示语 + 省略号，远超就说明没截断
         assert!(error.to_string().chars().count() < 400);
     }

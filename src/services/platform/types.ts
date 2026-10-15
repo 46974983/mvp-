@@ -71,13 +71,13 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   },
   'file-read': {
     label: '读取本地文件',
-    description: '读取你显式授权的那一个文件夹里的文本文件',
+    description: '在设置页浏览、预览你显式授权的那一个文件夹里的文本文件；目前不会自动附加到聊天请求',
     plannedStage: 'D',
     desktopImplemented: true,
   },
   screenshot: {
     label: '截屏',
-    description: '抓取主屏画面给助手看。默认关闭，需要你明确开启',
+    description: '在设置页手动抓取并预览主屏画面；目前不会发给模型。默认关闭，需要你明确开启',
     plannedStage: 'D',
     desktopImplemented: true,
   },
@@ -117,7 +117,7 @@ export interface AutostartStatus {
  * 文件读取的授权状态。
  *
  * `directory` 是用户**显式授权**的一个目录，空串表示没有授权 ——
- * 那时助手一个字节也读不到（技术方案第 6 节第 3 项要求的「路径权限」）。
+ * 那时应用的文件浏览功能一个字节也读不到（技术方案第 6 节第 3 项要求的「路径权限」）。
  */
 export interface FileAccessStatus {
   directory: string;

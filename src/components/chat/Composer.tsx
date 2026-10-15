@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SendHorizontal, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useChatStore, useSettingsStore } from '@/features';
+import { useChatStore, useConversationsStore, useSettingsStore } from '@/features';
 
 const MAX_TEXTAREA_HEIGHT_PX = 180;
 
@@ -10,11 +10,15 @@ export function Composer() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const streaming = useChatStore((state) => state.streaming);
+  const sending = useChatStore((state) => state.sending);
   const send = useChatStore((state) => state.send);
   const stop = useChatStore((state) => state.stop);
+  const switchingConversation = useConversationsStore((state) => state.switchingConversation);
 
   const modelName = useSettingsStore((state) => state.modelConfig.modelName);
   const performsNetworkRequest = useSettingsStore((state) => state.performsNetworkRequest);
+  const busy = sending || streaming;
+  const inputDisabled = busy || switchingConversation;
 
   const resize = useCallback(() => {
     const node = textareaRef.current;
@@ -27,7 +31,7 @@ export function Composer() {
 
   async function handleSend() {
     const value = text.trim();
-    if (value.length === 0 || streaming) return;
+    if (value.length === 0 || inputDisabled) return;
     setText('');
     await send(value);
     textareaRef.current?.focus();
@@ -42,7 +46,7 @@ export function Composer() {
             data-testid="composer-input"
             rows={1}
             value={text}
-            disabled={streaming}
+            disabled={inputDisabled}
             placeholder="输入消息，回车发送，Shift + 回车换行"
             aria-label="消息输入框"
             onChange={(event) => setText(event.target.value)}
@@ -56,11 +60,11 @@ export function Composer() {
             className="max-h-[180px] min-h-[30px] flex-1 resize-none bg-transparent px-1.5 py-1 text-[13px] leading-relaxed outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-60"
           />
 
-          {streaming ? (
+          {busy ? (
             <Button
               variant="outline"
               data-testid="stop-button"
-              title="停止生成，已生成的部分会保留"
+              title="停止本轮发送；如果已开始生成，已生成的部分会保留"
               onClick={stop}
             >
               <Square className="size-3.5" aria-hidden />
@@ -70,7 +74,7 @@ export function Composer() {
             <Button
               variant="primary"
               data-testid="send-button"
-              disabled={text.trim().length === 0}
+              disabled={inputDisabled || text.trim().length === 0}
               onClick={() => void handleSend()}
             >
               <SendHorizontal className="size-3.5" aria-hidden />

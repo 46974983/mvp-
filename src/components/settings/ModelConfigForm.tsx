@@ -14,8 +14,10 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { toUserFacingError } from '@/lib/log';
 import {
   modelConfigSchema,
+  modelConfigSchemaForStoredKey,
   useSettingsStore,
   type ModelConfigForm as ModelConfigFormValues,
 } from '@/features';
@@ -71,7 +73,9 @@ export function ModelConfigForm() {
     reset,
     formState: { errors, isSubmitting },
   } = useForm<ModelConfigFormValues>({
-    resolver: zodResolver(modelConfigSchema),
+    resolver: zodResolver(
+      keyIsPersisted && apiKeyStored ? modelConfigSchemaForStoredKey(true) : modelConfigSchema
+    ),
     defaultValues: modelConfig,
   });
 
@@ -85,13 +89,17 @@ export function ModelConfigForm() {
   }, [modelConfig, reset]);
 
   const onSubmit = handleSubmit(async (values) => {
-    await updateModelConfig(values);
-    setTestResult(null);
-    toast.success(
-      keyIsPersisted
-        ? '配置已保存：地址与模型名写入本地，API Key 交给系统凭据管理器。'
-        : '配置已应用：地址与模型名写入本地，API Key 只保留在本次会话。'
-    );
+    try {
+      await updateModelConfig(values);
+      setTestResult(null);
+      toast.success(
+        keyIsPersisted
+          ? '配置已保存：地址与模型名写入本地，API Key 交给系统凭据管理器。'
+          : '配置已应用：地址与模型名写入本地，API Key 只保留在本次会话。'
+      );
+    } catch (error) {
+      toast.error(toUserFacingError(error, '保存模型配置失败，请重试。'));
+    }
   });
 
   async function handleTest() {
@@ -106,15 +114,24 @@ export function ModelConfigForm() {
     setTestResult(null);
     try {
       setTestResult(await testConnection(getValues()));
+    } catch (error) {
+      setTestResult({
+        ok: false,
+        message: toUserFacingError(error, '测试连接失败，请检查配置后重试。'),
+      });
     } finally {
       setTesting(false);
     }
   }
 
   async function handleClearKey() {
-    await clearApiKey();
-    setTestResult(null);
-    toast.success('已清除本机保存的 API Key');
+    try {
+      await clearApiKey();
+      setTestResult(null);
+      toast.success('已清除本机保存的 API Key');
+    } catch (error) {
+      toast.error(toUserFacingError(error, '清除 API Key 失败，请重试。'));
+    }
   }
 
   return (

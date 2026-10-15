@@ -24,13 +24,13 @@ export function SettingsPanel({ onRequestReset }: SettingsPanelProps) {
         </div>
 
         <ModelConfigForm />
+        <ScreenshotSettings />
         <PersonaForm />
         <TraySettings />
         <NotificationSettings />
         <AutostartSettings />
         <ShortcutSettings />
         <FileAccessSettings />
-        <ScreenshotSettings />
         <DataPanel onRequestReset={onRequestReset} />
       </div>
     </main>

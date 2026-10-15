@@ -95,6 +95,29 @@ describe('人格配置校验与保存', () => {
     expect(store.getState().settings.persona.systemPrompt).toBe('先给结论。');
     expect(JSON.stringify(webStorage.raw())).toContain('阿枢');
   });
+
+  it('人格偏好保存失败时返回可读错误，界面状态不假装已保存', async () => {
+    const base = createBrowserStorage(createMemoryStorage());
+    const storage: StorageService = {
+      ...base,
+      settings: {
+        ...base.settings,
+        async saveSettings() {
+          throw new Error('磁盘只读');
+        },
+      },
+    };
+    const { store } = setup(undefined, storage);
+
+    const result = await store.getState().savePersona({
+      assistantName: '新名字',
+      userName: '我',
+      systemPrompt: '新的系统提示词',
+    });
+
+    expect(result).toMatchObject({ ok: false, message: '磁盘只读' });
+    expect(store.getState().settings.persona).toEqual(DEFAULT_PERSONA);
+  });
 });
 
 describe('模型配置：非敏感字段落盘，Key 不落盘', () => {
@@ -110,6 +133,52 @@ describe('模型配置：非敏感字段落盘，Key 不落盘', () => {
     expect(persisted).toContain(VALID_MODEL_CONFIG.modelName);
     expect(persisted).not.toContain(VALID_MODEL_CONFIG.apiKey);
     expect(persisted).not.toMatch(/apiKey/i);
+  });
+
+  it('模型配置持久化失败时不把未保存值发布到内存状态', async () => {
+    const base = createBrowserStorage(createMemoryStorage());
+    const storage: StorageService = {
+      ...base,
+      settings: {
+        ...base.settings,
+        async saveModelConfig() {
+          throw new Error('数据库写入失败');
+        },
+      },
+    };
+    const { store } = setup(undefined, storage);
+
+    await expect(store.getState().updateModelConfig(VALID_MODEL_CONFIG)).rejects.toThrow(
+      '数据库写入失败'
+    );
+    expect(store.getState().modelConfig).toEqual(DEFAULT_MODEL_CONFIG);
+    expect(store.getState().settings.model).toEqual({
+      apiUrl: DEFAULT_MODEL_CONFIG.apiUrl,
+      modelName: DEFAULT_MODEL_CONFIG.modelName,
+    });
+  });
+
+  it('模型地址写入失败但 Key 已落入凭据存储时刷新 Key 状态', async () => {
+    const base = createBrowserStorage(createMemoryStorage());
+    const storage: StorageService = {
+      ...base,
+      settings: {
+        ...base.settings,
+        async saveModelConfig() {
+          throw new Error('数据库写入失败');
+        },
+        async hasStoredApiKey() {
+          return true;
+        },
+      },
+    };
+    const { store } = setup(undefined, storage);
+
+    await expect(store.getState().updateModelConfig(VALID_MODEL_CONFIG)).rejects.toThrow(
+      '数据库写入失败'
+    );
+    expect(store.getState().apiKeyStored).toBe(true);
+    expect(store.getState().modelConfig).toEqual(DEFAULT_MODEL_CONFIG);
   });
 
   it('重新加载（等价于刷新页面）后地址还在，Key 必须重填', async () => {
@@ -172,6 +241,24 @@ describe('重置数据', () => {
 
     expect(webStorage.raw()).toEqual({});
     expect(store.getState().settings.persona.assistantName).toBe(DEFAULT_PERSONA.assistantName);
+  });
+
+  it('部分重置失败后仍从存储刷新状态，而不是留着重置前的内存快照', async () => {
+    const base = createBrowserStorage(createMemoryStorage());
+    const initial = await base.settings.getSettings();
+    const storage: StorageService = {
+      ...base,
+      async reset() {
+        await base.reset();
+        throw new Error('凭据删除失败');
+      },
+    };
+    const { store } = setup(undefined, storage);
+    await store.getState().updateModelConfig(VALID_MODEL_CONFIG);
+
+    await expect(store.getState().resetAll()).rejects.toThrow('凭据删除失败');
+    expect(store.getState().settings).toEqual(initial);
+    expect(store.getState().modelConfig).toEqual(DEFAULT_MODEL_CONFIG);
   });
 });
 
@@ -320,6 +407,29 @@ describe('通知设置', () => {
     await store.getState().load();
     expect(store.getState().onReplyComplete).toBe(false);
     expect(JSON.stringify(webStorage.raw())).toContain('onReplyComplete');
+  });
+
+  it('持久化失败时不切换通知偏好', async () => {
+    const base = createBrowserStorage(createMemoryStorage());
+    const storage: StorageService = {
+      ...base,
+      settings: {
+        ...base.settings,
+        async saveSettings() {
+          throw new Error('设置写入失败');
+        },
+      },
+    };
+    const { store } = setup(undefined, storage);
+    await store.getState().load();
+
+    const result = await store.getState().setNotifyOnReplyComplete(false);
+
+    expect(result).toMatchObject({ ok: false, message: '设置写入失败' });
+    expect(store.getState().onReplyComplete).toBe(DEFAULT_NOTIFY_ON_REPLY_COMPLETE);
+    expect(store.getState().settings.notification.onReplyComplete).toBe(
+      DEFAULT_NOTIFY_ON_REPLY_COMPLETE
+    );
   });
 
   it('测试通知带 force —— 点按钮时窗口必然在前台，不强制就必然被跳过', async () => {

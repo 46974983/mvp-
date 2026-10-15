@@ -29,6 +29,8 @@ const STREAM_PERSIST_INTERVAL_MS = 400;
 const MAX_HISTORY_TURNS = 40;
 
 export interface ChatState {
+  /** 已开始一轮发送，但占位消息还没落库时也要算忙碌 */
+  sending: boolean;
   streaming: boolean;
   /** 正在流式写入的那条消息 id，界面据此决定渲染哪段文本 */
   streamingMessageId: string | null;
@@ -55,6 +57,7 @@ export function createChatStore(
   // `streaming` 要等几次存储 await 之后才会变成 true。单靠它拦不住用户
   // 在首个请求刚开始的这段窗口里快速连发，两个 send 会互相覆盖流式状态。
   let sendInFlight = false;
+  let cancelRequested = false;
 
   /**
    * 回复有结果之后发一条系统通知。
@@ -95,6 +98,7 @@ export function createChatStore(
 
   return create<ChatState>((set, get) => ({
     streaming: false,
+    sending: false,
     streamingMessageId: null,
     streamingText: '',
     error: null,
@@ -103,11 +107,20 @@ export function createChatStore(
     async send(rawText) {
       const text = rawText.trim();
       if (text.length === 0) return;
-      if (sendInFlight || get().streaming) return;
+      if (conversations.getState().switchingConversation) return;
+      if (sendInFlight || get().sending || get().streaming) return;
       // 必须同步占锁，再进入任何 await；这样第二次调用会立刻被忽略。
       sendInFlight = true;
+      cancelRequested = false;
+      let assistantMessageId: string | null = null;
 
-      set({ error: null, lastOutcome: null });
+      set({
+        sending: true,
+        error: null,
+        lastOutcome: null,
+        streamingMessageId: null,
+        streamingText: '',
+      });
 
       try {
         // ---- 1. 没有会话就先建一个，别让用户卡在空状态里 ----
@@ -127,6 +140,11 @@ export function createChatStore(
         await conversations.getState().reloadConversations();
         await conversations.getState().reloadActiveMessages();
 
+        if (cancelRequested) {
+          set({ lastOutcome: 'aborted' });
+          return;
+        }
+
         // ---- 3. 助手占位消息，状态先标成 streaming ----
         const placeholder = await repo.appendMessage({
           conversationId,
@@ -134,13 +152,22 @@ export function createChatStore(
           content: '',
           status: 'streaming',
         });
+        assistantMessageId = placeholder.id;
 
         // 关键一步：把占位消息同步进会话消息列表。
         // 少了这一步，界面在整段生成过程中看不到任何东西 —— 没有气泡、没有光标、
         // 流式文本也没有落点，回复会「最后一次性蹦出来」。
         await conversations.getState().reloadActiveMessages();
 
+        if (cancelRequested) {
+          await repo.updateMessage(placeholder.id, { status: 'aborted' });
+          await conversations.getState().reloadActiveMessages();
+          set({ lastOutcome: 'aborted' });
+          return;
+        }
+
         set({
+          sending: false,
           streaming: true,
           streamingMessageId: placeholder.id,
           streamingText: '',
@@ -201,7 +228,7 @@ export function createChatStore(
         }
       } catch (error) {
         // 失败也要留下痕迹：把占位消息标成 error，并把已生成的部分留住
-        const messageId = get().streamingMessageId;
+        const messageId = assistantMessageId ?? get().streamingMessageId;
         if (messageId) {
           await repo
             .updateMessage(messageId, {
@@ -217,12 +244,18 @@ export function createChatStore(
         await notifyReplyFinished(message);
       } finally {
         sendInFlight = false;
-        set({ streaming: false, streamingMessageId: null });
+        cancelRequested = false;
+        set({ sending: false, streaming: false, streamingMessageId: null });
         await conversations.getState().reloadActiveMessages().catch(() => undefined);
       }
     },
 
     stop() {
+      if (get().sending) {
+        // 凭据读取、落库等准备工作不能被强制中断；等它们结束后不再启动模型请求。
+        cancelRequested = true;
+        return;
+      }
       if (!get().streaming) return;
       // provider 会立刻唤醒挂起的等待；已生成的内容由 send() 的收尾逻辑保留
       services.model.abort();

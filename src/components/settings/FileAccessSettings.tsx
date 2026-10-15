@@ -144,7 +144,8 @@ export function FileAccessSettings() {
       <CardHeader>
         <CardTitle>本地文件</CardTitle>
         <CardDescription>
-          授权一个文件夹之后，助手就能读里面的文本文件。只能读这一个文件夹，读不了别处。
+          授权一个文件夹之后，你可以在设置页浏览、预览里面的文本文件。
+          当前不会自动附加到聊天请求，也不会发给模型；只能读这一个文件夹，读不了别处。
         </CardDescription>
       </CardHeader>
 
@@ -170,7 +171,7 @@ export function FileAccessSettings() {
                   data-authorized="false"
                   className="text-[12px] leading-relaxed text-muted-foreground"
                 >
-                  还没有授权任何文件夹。现在助手读不到任何本地文件。
+                  还没有授权任何文件夹。设置页当前不能读取本地文件。
                 </p>
               ) : (
                 <>
@@ -366,7 +367,7 @@ export function FileAccessSettings() {
       <CardActions>
         <span className="text-[11px] leading-relaxed text-muted-foreground">
           {supported
-            ? '助手读文件时只拿得到相对这个文件夹的路径，读不到别处；文件夹里的符号链接也不会跟着走。'
+            ? '当前仅用于设置页浏览、预览；助手拿不到授权目录之外的路径，文件夹里的符号链接也不会跟着走。'
             : spec.description}
         </span>
       </CardActions>

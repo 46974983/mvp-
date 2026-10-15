@@ -109,8 +109,21 @@ test('Rust 侧的模型请求只打两个端点', () => {
 
 test('API 地址必须显式声明协议，不接受相对地址', () => {
   const chat = readRust('src/chat.rs');
-  assert.match(chat, /starts_with\("http:\/\/"\)/);
-  assert.match(chat, /starts_with\("https:\/\/"\)/);
+  assert.match(chat, /reqwest::Url::parse\(trimmed\)/);
+  assert.match(chat, /url\.scheme\(\) == "http"/);
+  assert.match(chat, /address\.is_loopback\(\)/);
+  assert.match(chat, /Policy::none\(\)/, '带凭据的模型请求不应跟随服务端重定向');
+});
+
+test('一般偏好保存不应被旧的模型地址阻塞，模型地址走专用校验命令', () => {
+  const commands = readRust('src/commands.rs');
+  const saveSettings = /pub async fn save_settings\([\s\S]*?\n\}/.exec(commands);
+  const saveModelConfig = /pub async fn save_model_config\([\s\S]*?\n\}/.exec(commands);
+
+  assert.ok(saveSettings, '未找到 save_settings');
+  assert.ok(saveModelConfig, '未找到 save_model_config');
+  assert.doesNotMatch(saveSettings[0], /validate_api_url|save_model_projection/);
+  assert.match(saveModelConfig[0], /validate_api_url/);
 });
 
 // ---------------------------------------------------------------------------

@@ -255,30 +255,44 @@ export function createSettingsStore(services: Services): SettingsStore {
         },
       };
 
-      await enqueueWrite(() => settingsRepo.saveSettings(next));
-      set({ settings: next });
-      return { ok: true, message: '人格配置已保存并立即生效。' };
+      try {
+        await enqueueWrite(() => settingsRepo.saveSettings(next));
+        set({ settings: next });
+        return { ok: true, message: '人格配置已保存并立即生效。' };
+      } catch (error) {
+        return {
+          ok: false,
+          message: toUserFacingError(error, '保存人格配置失败，请重试。'),
+        };
+      }
     },
 
     async updateModelConfig(patch) {
       const modelConfig: ModelConfig = { ...get().modelConfig, ...patch };
 
-      // 先更新内存，界面立刻反映；再交给存储层处理（它会决定 Key 去哪）
+      try {
+        await enqueueWrite(() => settingsRepo.saveModelConfig(modelConfig));
+      } catch (error) {
+        // 凭据存储与 SQLite 无法组成同一个事务，Key 可能已保存而模型设置写入失败。
+        const apiKeyStored = await settingsRepo
+          .hasStoredApiKey()
+          .catch(() => get().apiKeyStored);
+        set({ apiKeyStored });
+        throw error;
+      }
+
+      // 保存完再确认一次凭据状态：桌面模式下用户可能刚把 Key 填进去
+      const apiKeyStored = await settingsRepo
+        .hasStoredApiKey()
+        .catch(() => get().apiKeyStored);
       set({
         modelConfig,
         settings: {
           ...get().settings,
           model: { apiUrl: modelConfig.apiUrl, modelName: modelConfig.modelName },
         },
+        apiKeyStored,
       });
-
-      await enqueueWrite(() => settingsRepo.saveModelConfig(modelConfig));
-
-      // 保存完再确认一次凭据状态：桌面模式下用户可能刚把 Key 填进去
-      const apiKeyStored = await settingsRepo
-        .hasStoredApiKey()
-        .catch(() => get().apiKeyStored);
-      set({ apiKeyStored });
     },
 
     async clearApiKey() {
@@ -333,7 +347,14 @@ export function createSettingsStore(services: Services): SettingsStore {
         notification: { onReplyComplete: enabled },
       };
 
-      await enqueueWrite(() => settingsRepo.saveSettings(next));
+      try {
+        await enqueueWrite(() => settingsRepo.saveSettings(next));
+      } catch (error) {
+        return {
+          ok: false,
+          message: toUserFacingError(error, '保存通知设置失败，请重试。'),
+        };
+      }
       set({ settings: next, onReplyComplete: enabled });
 
       return {
@@ -514,11 +535,30 @@ export function createSettingsStore(services: Services): SettingsStore {
     async resetAll() {
       // 先把排队中的写入放完，再清库 —— 顺序反了就会被"复活"
       await writeChain.catch(() => undefined);
-      await services.storage.reset();
+      let resetError: unknown = null;
+      try {
+        await services.storage.reset();
+      } catch (error) {
+        // Rust 可能已清掉 SQLite、随后才在凭据管理器上失败。
+        // 无论结果如何都重新读取权威状态，避免界面留在「已重置前」的旧快照。
+        resetError = error;
+      }
 
       // 位置、凭据状态、能力集合和自启状态都重新探测一次（重置后可能变化）
-      const [location, credentialStatus, capabilities, autostart, shortcut, fileAccess] =
+      const [
+        persistedSettings,
+        apiKeyStored,
+        location,
+        credentialStatus,
+        capabilities,
+        autostart,
+        shortcut,
+        fileAccess,
+        recentReads,
+      ] =
         await Promise.all([
+          settingsRepo.getSettings().catch(() => defaultSettings()),
+          settingsRepo.hasStoredApiKey().catch(() => false),
           services.storage.resolveLocation().catch(() => null),
           services.storage.probeCredentialStorage().catch(() => null),
           probeCapabilities(),
@@ -528,29 +568,34 @@ export function createSettingsStore(services: Services): SettingsStore {
           services.platform.globalShortcutStatus().catch(() => null),
           // 授权范围属于本地数据，重置会清掉
           services.platform.fileAccessStatus().catch(() => null),
+          services.platform.recentFileReads().catch(() => []),
         ]);
 
-      const fresh = defaultSettings();
       set({
-        settings: fresh,
-        modelConfig: { ...DEFAULT_MODEL_CONFIG },
-        apiKeyStored: false,
+        settings: persistedSettings,
+        modelConfig: {
+          apiUrl: persistedSettings.model.apiUrl,
+          modelName: persistedSettings.model.modelName,
+          apiKey: '',
+        },
+        apiKeyStored,
         location,
         credentialStatus,
         platformCapabilities: capabilities,
-        closeToTray: fresh.window.closeToTray,
-        onReplyComplete: fresh.notification.onReplyComplete,
+        closeToTray: persistedSettings.window.closeToTray,
+        onReplyComplete: persistedSettings.notification.onReplyComplete,
         autostartEnabled: autostart?.enabled ?? get().autostartEnabled,
         autostartExePath: autostart?.exePath ?? get().autostartExePath,
-        globalShortcut: shortcut?.accelerator ?? fresh.shortcut.toggleWindow,
+        globalShortcut: shortcut?.accelerator ?? persistedSettings.shortcut.toggleWindow,
         globalShortcutRegistered: shortcut?.registered ?? false,
-        fileAccessDirectory: fileAccess?.directory ?? fresh.fileAccess.directory,
+        fileAccessDirectory: fileAccess?.directory ?? persistedSettings.fileAccess.directory,
         fileAccessAvailable: fileAccess?.available ?? false,
-        // 重置会把授权和读取记录一起清掉
-        recentReads: [],
-        screenshotEnabled: fresh.permission.screenshot,
+        recentReads,
+        screenshotEnabled: persistedSettings.permission.screenshot,
         lastScreenshot: null,
       });
+
+      if (resetError !== null) throw resetError;
     },
   }));
 }

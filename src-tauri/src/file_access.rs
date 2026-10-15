@@ -87,7 +87,7 @@ pub fn broad_scope_warning(root: &Path) -> Option<String> {
     // 盘符根目录（C:\、D:\ 之类）
     if root.parent().is_none() {
         return Some(
-            "你授权的是整个磁盘。助手可以读取这个盘上所有能被程序打开的文件，\
+            "你授权的是整个磁盘。应用的文件浏览功能可以读取这个盘上所有能被程序打开的文件，\
              建议换成具体的某个文件夹。"
                 .to_string(),
         );

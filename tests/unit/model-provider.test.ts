@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MockModelProvider } from '@/services/model';
-import { validateModelConfig } from '@/services/model/schema';
+import {
+  modelConfigSchemaForStoredKey,
+  validateModelConfig,
+} from '@/services/model/schema';
 import type { ChatRequest, ModelConfig } from '@/types';
 import { VALID_MODEL_CONFIG } from './helpers';
 
@@ -32,11 +35,26 @@ describe('配置校验规则', () => {
     expect(validateModelConfig(VALID_MODEL_CONFIG).ok).toBe(true);
   });
 
+  it('桌面端已有凭据时允许留空 Key，填入新 Key 仍需满足长度', () => {
+    const schema = modelConfigSchemaForStoredKey(true);
+
+    expect(schema.safeParse({ ...VALID_MODEL_CONFIG, apiKey: '' }).success).toBe(true);
+    expect(schema.safeParse({ ...VALID_MODEL_CONFIG, apiKey: 'short' }).success).toBe(false);
+    expect(schema.safeParse({ ...VALID_MODEL_CONFIG, apiKey: 'sk-new-key-1234' }).success).toBe(true);
+  });
+
   it('空地址 / 非 http 开头 / Key 过短 / 模型名带空格都会被挡住', () => {
     const cases: Array<[Partial<ModelConfig>, RegExp]> = [
       [{ apiUrl: '' }, /请填写 API 地址/],
-      [{ apiUrl: 'api.example.com/v1' }, /http:\/\/ 或 https:\/\//],
-      [{ apiUrl: 'https://' }, /API 地址不完整/],
+      [{ apiUrl: 'api.example.com/v1' }, /完整 http:\/\/ 或 https:\/\//],
+      [{ apiUrl: 'https://' }, /完整 http:\/\/ 或 https:\/\//],
+      [{ apiUrl: 'http://api.example.com/v1' }, /HTTP 只允许本机地址/],
+      [{ apiUrl: 'https://api.example.com/v1?api_key=secret' }, /不能包含.*Key/],
+      [{ apiUrl: 'https://api.example.com/v1?X-API-Key=secret' }, /不能包含.*凭据/],
+      [{ apiUrl: 'https://api.example.com/v1?client_secret=secret' }, /不能包含.*凭据/],
+      [{ apiUrl: 'https://api.example.com/v1?X-Amz-Signature=secret' }, /不能包含.*凭据/],
+      [{ apiUrl: 'https://api.example.com/v1#secret' }, /不能包含片段/],
+      [{ apiUrl: 'https://api.example.com/v1#' }, /不能包含片段/],
       [{ apiKey: 'short' }, /太短/],
       [{ modelName: 'gpt 4o' }, /不应包含空格/],
     ];
@@ -46,6 +64,21 @@ describe('配置校验规则', () => {
       expect(result.ok, `期望被拒绝：${JSON.stringify(patch)}`).toBe(false);
       expect(result.message).toMatch(expected);
     }
+  });
+
+  it('允许本机 HTTP 模型服务和远程 HTTPS 服务', () => {
+    expect(
+      validateModelConfig({ ...VALID_MODEL_CONFIG, apiUrl: 'http://localhost:11434/v1' }).ok
+    ).toBe(true);
+    expect(
+      validateModelConfig({ ...VALID_MODEL_CONFIG, apiUrl: 'http://127.0.0.2:11434/v1' }).ok
+    ).toBe(true);
+    expect(
+      validateModelConfig({ ...VALID_MODEL_CONFIG, apiUrl: 'https://api.example.com/v1' }).ok
+    ).toBe(true);
+    expect(
+      validateModelConfig({ ...VALID_MODEL_CONFIG, apiUrl: 'http://[::1]:11434/v1' }).ok
+    ).toBe(true);
   });
 });
 

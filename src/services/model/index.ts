@@ -18,7 +18,11 @@ import type { ModelProvider } from './types';
 
 export { MockModelProvider } from './mock-provider';
 export { createTauriModelProvider } from './tauri-provider';
-export { modelConfigSchema, validateModelConfig } from './schema';
+export {
+  modelConfigSchema,
+  modelConfigSchemaForStoredKey,
+  validateModelConfig,
+} from './schema';
 export type { ModelConfigForm } from './schema';
 export type { ModelProvider } from './types';
 

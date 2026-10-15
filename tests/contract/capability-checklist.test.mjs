@@ -337,6 +337,24 @@ test('重置本地数据要顺手撤销系统层面的副作用', () => {
     /set_close_to_tray\(/,
     '重置时必须把关闭行为的内存缓存恢复成默认值'
   );
+  assert.match(
+    resetBlock[0],
+    /read_audit\.clear\(\)/,
+    '重置后必须清除进程内的文件读取记录'
+  );
+});
+
+test('文件和截屏能力的文案如实说明目前只在设置页预览', () => {
+  const fileSettings = read('src/components/settings/FileAccessSettings.tsx');
+  const screenshotSettings = read('src/components/settings/ScreenshotSettings.tsx');
+  const platform = read('src/services/platform/types.ts');
+
+  assert.match(fileSettings, /设置页浏览、预览/);
+  assert.match(fileSettings, /不会自动附加到聊天请求/);
+  assert.match(screenshotSettings, /设置页手动抓取主屏并预览/);
+  assert.match(screenshotSettings, /不会附加到聊天或发给模型/);
+  assert.match(platform, /目前不会自动附加到聊天请求/);
+  assert.match(platform, /目前不会发给模型/);
 });
 
 // ---------------------------------------------------------------------------

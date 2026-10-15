@@ -13,11 +13,15 @@ export function MessageList() {
   const messages = useConversationsStore((state) => state.messages);
   const loaded = useConversationsStore((state) => state.loaded);
   const createConversation = useConversationsStore((state) => state.createConversation);
+  const switchingConversation = useConversationsStore((state) => state.switchingConversation);
 
   const persona = useSettingsStore((state) => state.settings.persona);
 
   const streamingMessageId = useChatStore((state) => state.streamingMessageId);
   const streamingText = useChatStore((state) => state.streamingText);
+  const sending = useChatStore((state) => state.sending);
+  const streaming = useChatStore((state) => state.streaming);
+  const busy = sending || streaming || switchingConversation;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);
@@ -43,7 +47,11 @@ export function MessageList() {
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
         <MessageSquarePlus className="size-8 text-muted-foreground/60" aria-hidden />
         <p className="text-[13px] text-muted-foreground">还没有选中会话</p>
-        <Button variant="primary" onClick={() => void createConversation()}>
+        <Button
+          variant="primary"
+          disabled={busy}
+          onClick={() => void createConversation()}
+        >
           新建一个会话
         </Button>
       </div>

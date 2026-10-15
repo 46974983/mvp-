@@ -19,6 +19,7 @@ interface ConfirmDialogProps {
   description: ReactNode;
   confirmText?: string;
   cancelText?: string;
+  confirmDisabled?: boolean;
   /** 破坏性操作传 true，确认按钮转为危险样式 */
   danger?: boolean;
   onConfirm: () => void;
@@ -31,6 +32,7 @@ export function ConfirmDialog({
   description,
   confirmText = '确定',
   cancelText = '取消',
+  confirmDisabled = false,
   danger = false,
   onConfirm,
   onCancel,
@@ -53,6 +55,7 @@ export function ConfirmDialog({
           <Button
             variant={danger ? 'danger' : 'primary'}
             data-testid="confirm-accept"
+            disabled={confirmDisabled}
             onClick={onConfirm}
           >
             {confirmText}

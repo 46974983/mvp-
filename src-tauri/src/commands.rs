@@ -213,8 +213,8 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<AppSettings, Str
     blocking(move || db.get_settings()).await
 }
 
-/// 保存人格配置与非敏感模型设置。
-/// 参数类型 `AppSettings` 里没有 api_key 字段，所以这条命令写不出凭据。
+/// 保存人格与一般偏好。
+/// 模型地址单独由 save_model_config 校验并保存，避免旧的无效地址阻塞其他偏好修改。
 #[tauri::command]
 pub async fn save_settings(
     state: State<'_, AppState>,
@@ -224,7 +224,6 @@ pub async fn save_settings(
     let close_to_tray = settings.window.close_to_tray;
     blocking(move || {
         db.save_persona(&settings.persona)?;
-        db.save_model_projection(&settings.model)?;
         db.save_window_settings(&settings.window)?;
         db.save_notification_settings(&settings.notification)?;
         // 刻意**不写** settings.shortcut：全局快捷键有副作用（要注册到系统），
@@ -261,6 +260,8 @@ pub async fn save_model_config(
     state: State<'_, AppState>,
     config: ModelConfig,
 ) -> Result<(), String> {
+    crate::chat::validate_api_url(&config.api_url).map_err(|error| error.to_string())?;
+
     if config.api_key.trim().is_empty() {
         // 只改地址和模型名时不该把已保存的 Key 弄丢
         let db = state.db.clone();
@@ -328,24 +329,30 @@ pub async fn reset_all_data(app: AppHandle, state: State<'_, AppState>) -> Resul
     // 但那个热键**仍然生效**、关闭窗口**仍然缩到托盘** —— 因为这两件事的实际效果
     // 由系统和我们内存里的缓存决定，不是由数据库决定的。
     // 用户会说「我明明重置了」。
-    let previous_shortcut = state.db.get_settings().map(|s| s.shortcut.toggle_window);
-    blocking(move || {
-        // 先清数据再清凭据：中途失败时，宁可留下一个「多余的 Key」（用户能再点一次清除），
-        // 也不要出现「会话没了但 Key 还在」这种更难解释的状态
-        db.reset_all()?;
-        secrets.delete()?;
-        Ok(())
+    let previous_settings = blocking({
+        let db = db.clone();
+        move || db.get_settings()
     })
     .await?;
 
+    // 先清数据再清凭据：中途失败时，宁可留下一个「多余的 Key」（用户能再点一次清除），
+    // 也不要出现「会话没了但 Key 还在」这种更难解释的状态。
+    blocking(move || db.reset_all()).await?;
+
     // 撤销系统层面的副作用，让实际行为和「已重置」一致
-    if let Ok(previous) = previous_shortcut {
-        crate::shortcut::apply(&app, &previous, None);
-    }
+    state.read_audit.clear();
+    crate::shortcut::apply(&app, &previous_settings.shortcut.toggle_window, None);
     let defaults = crate::models::AppSettings::default();
     state
         .window
         .set_close_to_tray(defaults.window.close_to_tray);
+
+    // 凭据管理器失败不应让读取记录或系统快捷键继续保持旧状态。
+    if let Err(error) = blocking(move || secrets.delete()).await {
+        return Err(format!(
+            "本地数据已重置，但删除已保存 API Key 失败：{error}"
+        ));
+    }
 
     Ok(())
 }
@@ -375,6 +382,10 @@ pub async fn stream_chat(
     request: ChatRequest,
     on_event: Channel<StreamEvent>,
 ) -> Result<StreamResult, String> {
+    // 先复位，再做任何异步工作。否则用户在密钥/设置读取期间按「停止」，
+    // 后面的复位会覆盖取消信号。
+    state.cancel.store(false, Ordering::Relaxed);
+
     let secrets = state.secrets.clone();
     let api_key = blocking(move || secrets.load()).await?.ok_or_else(|| {
         AppError::Invalid("尚未保存 API Key，请先在设置里填写。".to_string()).to_string()
@@ -390,9 +401,6 @@ pub async fn stream_chat(
         request.model.clone()
     };
     let effective = ChatRequest { model, ..request };
-
-    // 每次开新请求前先复位取消标记，避免上一次的「停止」把这一次也停了
-    state.cancel.store(false, Ordering::Relaxed);
 
     chat::stream_chat(
         &settings.model.api_url,
@@ -655,7 +663,7 @@ pub async fn authorize_directory(
         ok: true,
         message: match warning {
             Some(warning) => format!("已授权读取 {stored}。提醒：{warning}"),
-            None => format!("已授权读取 {stored}。助手只能读这个目录里的文件。"),
+            None => format!("已授权设置页预览 {stored}。应用的文件浏览只限于这个目录。"),
         },
     })
 }
@@ -676,7 +684,7 @@ pub async fn revoke_directory(state: State<'_, AppState>) -> Result<OperationRes
 
     Ok(OperationResult {
         ok: true,
-        message: "已撤销文件读取授权。助手现在读不到任何本地文件。".to_string(),
+        message: "已撤销设置页文件预览授权。这个目录现在不能通过应用读取。".to_string(),
     })
 }
 
@@ -746,9 +754,10 @@ pub async fn set_screenshot_enabled(
     Ok(OperationResult {
         ok: true,
         message: if enabled {
-            "已开启截屏。助手现在可以抓取主屏画面；截图只在内存里传递，不会写到磁盘上。".to_string()
+            "已开启手动截屏。你可以在设置页抓取并预览主屏画面；截图只在内存里传递，不会写到磁盘上。"
+                .to_string()
         } else {
-            "已关闭截屏。助手现在抓不到屏幕内容。".to_string()
+            "已关闭手动截屏。设置页现在不能抓取屏幕内容。".to_string()
         },
     })
 }
