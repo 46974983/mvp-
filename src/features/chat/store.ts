@@ -52,6 +52,9 @@ export function createChatStore(
   settings: SettingsStore
 ): ChatStore {
   const repo = services.storage.conversations;
+  // `streaming` 要等几次存储 await 之后才会变成 true。单靠它拦不住用户
+  // 在首个请求刚开始的这段窗口里快速连发，两个 send 会互相覆盖流式状态。
+  let sendInFlight = false;
 
   /**
    * 回复有结果之后发一条系统通知。
@@ -100,7 +103,9 @@ export function createChatStore(
     async send(rawText) {
       const text = rawText.trim();
       if (text.length === 0) return;
-      if (get().streaming) return;
+      if (sendInFlight || get().streaming) return;
+      // 必须同步占锁，再进入任何 await；这样第二次调用会立刻被忽略。
+      sendInFlight = true;
 
       set({ error: null, lastOutcome: null });
 
@@ -211,6 +216,7 @@ export function createChatStore(
         // 出错了也该告诉用户 —— 尤其是他切走的时候，否则消息就一直悄无声息地失败
         await notifyReplyFinished(message);
       } finally {
+        sendInFlight = false;
         set({ streaming: false, streamingMessageId: null });
         await conversations.getState().reloadActiveMessages().catch(() => undefined);
       }

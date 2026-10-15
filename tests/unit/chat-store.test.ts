@@ -102,6 +102,24 @@ describe('发送消息', () => {
       .messages.filter((message) => message.role === 'user');
     expect(userMessages.map((message) => message.content)).toEqual(['第一条']);
   });
+
+  it('请求尚未把 streaming 状态写回时快速连发，也只保留第一条', async () => {
+    const provider = createStepProvider('需要等待的回复');
+    const { chat, conversations } = await setup(provider);
+
+    // 第一次 send 还卡在创建占位消息之后的 await，第二次调用不能穿透。
+    const first = chat.getState().send('第一条');
+    const second = chat.getState().send('第二条');
+
+    await waitFor(() => chat.getState().streaming);
+    provider.abort();
+    await Promise.all([first, second]);
+
+    const userMessages = conversations
+      .getState()
+      .messages.filter((message) => message.role === 'user');
+    expect(userMessages.map((message) => message.content)).toEqual(['第一条']);
+  });
 });
 
 describe('请求组装', () => {
