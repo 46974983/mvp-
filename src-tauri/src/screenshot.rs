@@ -35,11 +35,21 @@ use crate::models::Screenshot;
 /// 那种时候给一句明确的话，比让前端卡死强。
 pub const MAX_ENCODED_BYTES: usize = 32 * 1024 * 1024;
 
-/// 把一张 RGBA 图编码成 PNG 的 data URL。
+/// 把一张 RGBA 图编码成 PNG 的 data URL，同时返回 PNG 原始字节数。
 ///
 /// 单独抽出来是为了能测：真正的截屏需要桌面会话，而编码这一步只用一张合成的小图就能验证，
 /// 包括「解回来还是原来那张」这种往返性质。
-pub fn encode_png_data_url(image: &RgbaImage) -> Result<String, String> {
+pub fn encode_png_data_url(image: &RgbaImage) -> Result<(String, u64), String> {
+    let bytes = encode_png_bytes(image)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok((
+        format!("data:image/png;base64,{encoded}"),
+        bytes.len() as u64,
+    ))
+}
+
+/// 把一张 RGBA 图编码成 PNG 字节，并检查 IPC 传输上限。
+fn encode_png_bytes(image: &RgbaImage) -> Result<Vec<u8>, String> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     image
         .write_to(&mut buffer, ImageFormat::Png)
@@ -54,8 +64,7 @@ pub fn encode_png_data_url(image: &RgbaImage) -> Result<String, String> {
         ));
     }
 
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:image/png;base64,{encoded}"))
+    Ok(bytes)
 }
 
 /// 抓一张主屏截图。
@@ -82,8 +91,7 @@ pub fn capture() -> Result<Screenshot, String> {
         .map_err(|error| format!("截屏失败：{error}"))?;
 
     let (width, height) = (image.width(), image.height());
-    let data_url = encode_png_data_url(&image)?;
-    let bytes = data_url.len() as u64 - "data:image/png;base64,".len() as u64;
+    let (data_url, bytes) = encode_png_data_url(&image)?;
 
     // 记一条日志，但不记内容 —— 截图里可能有用户不希望被记录的东西
     log::info!("完成一次截屏（{width}×{height}，{monitor_count} 块屏）");
@@ -115,7 +123,7 @@ mod tests {
 
     #[test]
     fn encodes_a_png_data_url() {
-        let url = encode_png_data_url(&sample_image(4, 3)).unwrap();
+        let (url, _) = encode_png_data_url(&sample_image(4, 3)).unwrap();
 
         assert!(
             url.starts_with("data:image/png;base64,"),
@@ -127,7 +135,7 @@ mod tests {
     fn encoded_image_decodes_back_to_the_same_pixels() {
         // 往返检查：只断言前缀的话，编码器写出一堆垃圾也能过
         let original = sample_image(8, 5);
-        let url = encode_png_data_url(&original).unwrap();
+        let (url, _) = encode_png_data_url(&original).unwrap();
 
         let encoded = url.trim_start_matches("data:image/png;base64,");
         let bytes = base64::engine::general_purpose::STANDARD
@@ -142,8 +150,27 @@ mod tests {
     #[test]
     fn encoded_data_url_has_no_whitespace() {
         // base64 里混进换行的话，放进 <img src> 会静默失效
-        let url = encode_png_data_url(&sample_image(16, 16)).unwrap();
+        let (url, _) = encode_png_data_url(&sample_image(16, 16)).unwrap();
         assert!(!url.contains('\n') && !url.contains('\r') && !url.contains(' '));
+    }
+
+    #[test]
+    fn screenshot_metadata_reports_png_bytes_not_base64_length() {
+        let image = sample_image(8, 5);
+        let (data_url, bytes) = encode_png_data_url(&image).unwrap();
+        let encoded = data_url
+            .as_str()
+            .trim_start_matches("data:image/png;base64,");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+
+        assert_eq!(bytes as usize, decoded.len());
+        assert_ne!(
+            bytes as usize,
+            encoded.len(),
+            "bytes 应该是 PNG 原始字节数，不是 base64 字符数"
+        );
     }
 
     #[test]
