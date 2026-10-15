@@ -20,8 +20,8 @@ use crate::error::{AppError, AppResult};
 use crate::models::{
     AppSettings, AppendMessageInput, Conversation, CreateConversationInput,
     DEFAULT_CONVERSATION_TITLE, FileAccessSettings, Message, MessagePatch, NotificationSettings,
-    PersistedModelConfig, PersonaConfig, ShortcutSettings, StorageLocation, WindowSettings,
-    derive_title_from_message, normalize_title,
+    PermissionSettings, PersistedModelConfig, PersonaConfig, ShortcutSettings, StorageLocation,
+    WindowSettings, derive_title_from_message, normalize_title,
 };
 
 /// 迁移脚本按版本号排列，只增不改：已经跑过的版本在用户机器上不会再跑一次。
@@ -457,6 +457,13 @@ impl Database {
                 directory: lookup(crate::models::setting_keys::FILE_ACCESS_DIRECTORY)
                     .unwrap_or(defaults.file_access.directory),
             },
+            permission: PermissionSettings {
+                // 只认明确的 "true"：漏了这条、值写坏了、键被删了，一律回到默认的「关闭」。
+                // 高风险能力的开关，失败方向必须选「关」。
+                screenshot: lookup(crate::models::setting_keys::PERMISSION_SCREENSHOT)
+                    .map(|value| value.trim().eq_ignore_ascii_case("true"))
+                    .unwrap_or(defaults.permission.screenshot),
+            },
         })
     }
 
@@ -528,6 +535,18 @@ impl Database {
         self.write_settings(&[(
             crate::models::setting_keys::FILE_ACCESS_DIRECTORY,
             file_access.directory.trim(),
+        )])
+    }
+
+    /// 写高风险能力的开关
+    pub fn save_permission_settings(&self, permission: &PermissionSettings) -> AppResult<()> {
+        self.write_settings(&[(
+            crate::models::setting_keys::PERMISSION_SCREENSHOT,
+            if permission.screenshot {
+                "true"
+            } else {
+                "false"
+            },
         )])
     }
 

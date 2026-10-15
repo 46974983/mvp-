@@ -77,9 +77,9 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   },
   screenshot: {
     label: '截屏',
-    description: '截取屏幕内容',
+    description: '抓取主屏画面给助手看。默认关闭，需要你明确开启',
     plannedStage: 'D',
-    desktopImplemented: false,
+    desktopImplemented: true,
   },
 };
 
@@ -156,6 +156,30 @@ export interface RecentRead {
   bytes: number;
   /** 毫秒时间戳 */
   at: number;
+}
+
+/**
+ * 一次截屏的结果。
+ *
+ * **图片只在内存里传递，不落盘。** `dataUrl` 可以直接放进 `<img src>`，
+ * 用完就没了 —— 没有文件、没有路径、没有需要清理的残留。
+ *
+ * 这也解释了为什么返回的是 `dataUrl` 而不是文件路径：这个应用里
+ * 「截图放哪儿」这个问题根本不存在，比事后去管临时文件的清理更简单也更安全。
+ */
+export interface Screenshot {
+  /** PNG 的 data URL，只在内存里 */
+  dataUrl: string;
+  width: number;
+  height: number;
+  /** 编码后的字节数 */
+  bytes: number;
+  /** 截的是哪块屏 */
+  monitor: string;
+  /** 系统里一共有几块屏 —— 界面上要如实说明只截了主屏 */
+  monitorCount: number;
+  /** 毫秒时间戳 */
+  capturedAt: number;
 }
 
 /**
@@ -279,12 +303,20 @@ export interface PlatformService {
   recentFileReads(): Promise<RecentRead[]>;
 
   /**
-   * 截屏，返回图片数据的引用。**阶段 D 后续步骤，尚未实现。**
+   * 抓一张主屏截图。
    *
-   * 技术方案第 6 节把它和键鼠模拟并列，都要求「明确的设置开关、失败提示和权限说明，
-   * 默认关闭」—— 所以它会带着一个默认关的开关和一次显式确认，而不是直接可调。
+   * **Rust 侧会再检查一次开关**：没开启时直接拒绝，不管前端有没有把按钮禁掉。
+   * 前端那个开关表达的是用户意图，不是权限 —— 命令是可以被直接调用的。
    */
-  takeScreenshot(): Promise<string>;
+  takeScreenshot(): Promise<Screenshot>;
+
+  /**
+   * 开启 / 关闭截屏能力。
+   *
+   * 技术方案第 6 节要求高风险自动化能力**默认关闭**，
+   * 所以这个开关的默认值是 false，而不是「开着但提示一下」。
+   */
+  setScreenshotEnabled(enabled: boolean): Promise<OperationResult>;
 
   /**
    * 发一条系统通知。

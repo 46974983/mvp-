@@ -43,6 +43,8 @@ tauri-plugin-notification = "2.6.0"
 tauri-plugin-autostart = "2.7.0"
 tauri-plugin-global-shortcut = "2.4.1"
 tauri-plugin-dialog = "2.8.3"
+xcap = "0.9.8"
+base64 = "0.23.1"
 
 [profile.release]
 # 桌面应用宁可编久一点，也不要几十兆的体积

@@ -328,3 +328,22 @@ describe('本地文件', () => {
     expect(await platform.recentFileReads()).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 截屏（阶段 D）
+// ---------------------------------------------------------------------------
+
+describe('截屏', () => {
+  it('动作类方法抛 UnsupportedCapabilityError', async () => {
+    const platform = createBrowserPlatformService();
+
+    await expect(platform.takeScreenshot()).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(platform.setScreenshotEnabled(true)).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError
+    );
+  });
+
+  // 注：桌面端「开关关着时命令仍会拒绝」这一条**不在单元测试里**，
+  // 因为它是 Rust 侧的行为。契约测试断言了 ensure_enabled 必须在命令里，
+  // 真正跑起来的行为只能人工在桌面版上验一次。
+});

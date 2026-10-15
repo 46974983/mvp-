@@ -6,6 +6,7 @@ import {
   DEFAULT_PERSONA,
   DEFAULT_FILE_DIRECTORY,
   DEFAULT_GLOBAL_SHORTCUT,
+  DEFAULT_SCREENSHOT_ENABLED,
   DEFAULT_NOTIFY_ON_REPLY_COMPLETE,
 } from '@/services/storage';
 import type { StorageService } from '@/services/storage';
@@ -771,5 +772,138 @@ describe('本地文件访问', () => {
     expect(store.getState().fileAccessDirectory).toBe(DEFAULT_FILE_DIRECTORY);
     expect(store.getState().fileAccessAvailable).toBe(false);
     expect(store.getState().recentReads).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 截屏（阶段 D）
+// ---------------------------------------------------------------------------
+
+/**
+ * 造一个「声称能截屏」的平台。
+ *
+ * 关键的一点：**关着开关时它也拒绝** —— 这是真实 Rust 侧的行为
+ * （permissions::ensure_enabled），假实现照着做，
+ * 才能在单元层面测到「关着就不许用」这条链路。
+ */
+function createScreenshotPlatform() {
+  const base = createBrowserPlatformService();
+  let enabled = false;
+  let captures = 0;
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-screenshot',
+    probeCapabilities: async () => new Set<PlatformCapability>(['screenshot']),
+    setScreenshotEnabled: async (next: boolean) => {
+      enabled = next;
+      return { ok: true, message: next ? '已开启截屏。' : '已关闭截屏。' };
+    },
+    takeScreenshot: async () => {
+      if (!enabled) {
+        throw new Error('截屏还没有开启。这是一个需要你明确同意的能力，请先到设置的对应卡片里打开开关。');
+      }
+      captures += 1;
+      return {
+        dataUrl: 'data:image/png;base64,AAAA',
+        width: 2560,
+        height: 1440,
+        bytes: 1024,
+        monitor: '主显示器',
+        monitorCount: 2,
+        capturedAt: 1,
+      };
+    },
+  };
+
+  return { platform, captures: () => captures, isEnabled: () => enabled };
+}
+
+describe('截屏能力', () => {
+  it('默认关闭 —— 技术方案第 6 节要求高风险能力默认关闭', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    expect(store.getState().screenshotEnabled).toBe(false);
+    expect(DEFAULT_SCREENSHOT_ENABLED).toBe(false);
+  });
+
+  it('浏览器模式探测不到这个能力', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    expect(store.getState().platformCapabilities).not.toContain('screenshot');
+  });
+
+  it('开启之后才能抓', async () => {
+    const { platform, captures } = createScreenshotPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    await store.getState().setScreenshotEnabled(true);
+    const shot = await store.getState().takeScreenshot();
+
+    expect(captures()).toBe(1);
+    expect(shot.width).toBe(2560);
+    expect(shot.monitorCount).toBe(2);
+    expect(store.getState().lastScreenshot?.dataUrl.startsWith('data:image/png;base64,')).toBe(true);
+  });
+
+  it('没开启时直接抓会被拒绝，并给出可展示的一句话', async () => {
+    const { platform, captures } = createScreenshotPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    await expect(store.getState().takeScreenshot()).rejects.toThrow('还没有开启');
+    expect(captures()).toBe(0);
+    expect(store.getState().lastScreenshot).toBeNull();
+  });
+
+  it('关掉开关时把上一次的画面一并丢掉', async () => {
+    const { platform } = createScreenshotPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().setScreenshotEnabled(true);
+    await store.getState().takeScreenshot();
+    expect(store.getState().lastScreenshot).not.toBeNull();
+
+    await store.getState().setScreenshotEnabled(false);
+
+    // 能力都关了还留着一张屏幕快照在内存里没有道理，而且它是最敏感的那份数据
+    expect(store.getState().lastScreenshot).toBeNull();
+    expect(store.getState().screenshotEnabled).toBe(false);
+  });
+
+  it('开关是持久化的偏好，会被写进设置结构', async () => {
+    const { platform } = createScreenshotPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    await store.getState().setScreenshotEnabled(true);
+
+    expect(store.getState().settings.permission.screenshot).toBe(true);
+  });
+
+  it('环境不支持时开启返回失败说明而不是抛错', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    const result = await store.getState().setScreenshotEnabled(true);
+
+    expect(result.ok).toBe(false);
+    expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it('重置本地数据会关掉截屏并清掉画面', async () => {
+    const { platform } = createScreenshotPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().setScreenshotEnabled(true);
+    await store.getState().takeScreenshot();
+
+    await store.getState().resetAll();
+
+    expect(store.getState().screenshotEnabled).toBe(DEFAULT_SCREENSHOT_ENABLED);
+    expect(store.getState().lastScreenshot).toBeNull();
   });
 });

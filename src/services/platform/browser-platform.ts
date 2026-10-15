@@ -68,10 +68,6 @@ export function createBrowserPlatformService(): PlatformService {
       },
     },
 
-    async takeScreenshot() {
-      unsupported('screenshot');
-    },
-
     async showNotification(request: NotificationRequest): Promise<NotificationOutcome> {
       const api = resolveNotificationApi();
       // 能力本身不存在 → 抛错（环境不支持）。下面「有 API 但没发出去」才是返回值。
@@ -115,6 +111,14 @@ export function createBrowserPlatformService(): PlatformService {
       // 浏览器里没有「开机自启」这回事，所以如实返回 false —— 这是事实，不是失败。
       // 界面会先看能力集合，不会把这个值当成一种状态来展示。
       return { enabled: false, exePath: '' };
+    },
+
+    async takeScreenshot() {
+      unsupported('screenshot');
+    },
+
+    async setScreenshotEnabled() {
+      unsupported('screenshot');
     },
 
     // ---- 本地文件（阶段 D） ----

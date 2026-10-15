@@ -11,6 +11,7 @@ export type {
   ModelConfig,
   NotificationSettings,
   OperationResult,
+  PermissionSettings,
   PersonaConfig,
   ShortcutSettings,
   StorageLocation,

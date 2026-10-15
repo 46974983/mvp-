@@ -18,7 +18,6 @@ import { invoke } from '@tauri-apps/api/core';
 import type { OperationResult } from '@/types';
 import {
   PLATFORM_CAPABILITIES,
-  UnsupportedCapabilityError,
   type AutostartStatus,
   type FileAccessStatus,
   type FileContent,
@@ -29,15 +28,14 @@ import {
   type PlatformCapability,
   type PlatformService,
   type RecentRead,
+  type Screenshot,
 } from './types';
 
 const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set(PLATFORM_CAPABILITIES);
 
+// 注意：这里已经没有「不支持」的桩了 —— 阶段 D 之后 PLATFORM_CAPABILITIES 里的每一项
+// 在桌面端都有实现。以后再加新能力时，先写浏览器侧那个抛错的桩，桌面侧照常实现。
 export function createTauriPlatformService(): PlatformService {
-  function unsupported(capability: PlatformCapability): never {
-    throw new UnsupportedCapabilityError(capability);
-  }
-
   async function probeCapabilities(): Promise<ReadonlySet<PlatformCapability>> {
     const reported = await invoke<string[]>('platform_capabilities');
     // 过滤一遍：只认本版本认识的名字。
@@ -63,10 +61,6 @@ export function createTauriPlatformService(): PlatformService {
       setCloseToTray: (enabled: boolean) => invoke<void>('set_close_to_tray', { enabled }),
     },
 
-    async takeScreenshot() {
-      unsupported('screenshot');
-    },
-
     async showNotification(request: NotificationRequest): Promise<NotificationOutcome> {
       // 走自己的窄命令，而不是插件的 JS API。
       // 关键原因是「窗口在前台就不打扰」这个判定只有 Rust 知道答案 ——
@@ -86,6 +80,15 @@ export function createTauriPlatformService(): PlatformService {
     },
 
     autostartStatus: () => invoke<AutostartStatus>('autostart_status'),
+
+    // ---- 截屏（阶段 D） ----
+
+    // 门在 Rust 侧，这里只是把意图传过去；开关本身存在 settings 表
+    setScreenshotEnabled: (enabled: boolean) =>
+      invoke<OperationResult>('set_screenshot_enabled', { enabled }),
+
+    // 返回的 data URL 只在内存里，没有文件落盘
+    takeScreenshot: () => invoke<Screenshot>('take_screenshot'),
 
     // ---- 本地文件（阶段 D） ----
     //

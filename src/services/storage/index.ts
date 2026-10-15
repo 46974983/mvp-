@@ -20,6 +20,7 @@ export {
   DEFAULT_MODEL_ENDPOINT,
   DEFAULT_NOTIFY_ON_REPLY_COMPLETE,
   DEFAULT_PERSONA,
+  DEFAULT_SCREENSHOT_ENABLED,
   defaultSettings,
   deriveTitleFromMessage,
 } from './browser-storage';

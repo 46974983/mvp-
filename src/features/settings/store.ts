@@ -34,6 +34,7 @@ import type {
   NotificationOutcome,
   PlatformCapability,
   RecentRead,
+  Screenshot,
 } from '@/services/platform';
 import { DEFAULT_MODEL_ENDPOINT, defaultSettings } from '@/services/storage';
 import { toUserFacingError } from '@/lib/log';
@@ -89,6 +90,13 @@ export interface SettingsState {
   fileAccessAvailable: boolean;
   /** 最近的读取记录。回答「它刚才读了我的什么」—— 只在内存里，不落盘。 */
   recentReads: RecentRead[];
+  /**
+   * 截屏能力是否开启。**默认关闭**（技术方案第 6 节要求高风险能力默认关闭）。
+   * 这个值表达的是用户意图；真正的门在 Rust 侧。
+   */
+  screenshotEnabled: boolean;
+  /** 最近一次截屏。**只在内存里**，关掉能力时一并丢弃。 */
+  lastScreenshot: Screenshot | null;
 
   load(): Promise<void>;
   savePersona(persona: PersonaConfig): Promise<OperationResult>;
@@ -120,6 +128,10 @@ export interface SettingsState {
   listAuthorizedDirectory(relativeDir: string): Promise<FileEntry[]>;
   /** 刷新「最近读取」列表 */
   refreshRecentReads(): Promise<void>;
+  /** 开启 / 关闭截屏能力 */
+  setScreenshotEnabled(enabled: boolean): Promise<OperationResult>;
+  /** 抓一张主屏截图（只在内存里，不落盘）。失败时抛出一句可展示的话。 */
+  takeScreenshot(): Promise<Screenshot>;
   testConnection(config: ModelConfig): Promise<OperationResult>;
   resetAll(): Promise<void>;
 }
@@ -171,6 +183,8 @@ export function createSettingsStore(services: Services): SettingsStore {
     fileAccessDirectory: defaultSettings().fileAccess.directory,
     fileAccessAvailable: false,
     recentReads: [],
+    screenshotEnabled: defaultSettings().permission.screenshot,
+    lastScreenshot: null,
 
     async load() {
       // 五件事互不依赖，并行拿。任何一件失败都不该让整个设置页打不开，
@@ -223,6 +237,8 @@ export function createSettingsStore(services: Services): SettingsStore {
         fileAccessDirectory: fileAccess?.directory ?? settings.fileAccess.directory,
         fileAccessAvailable: fileAccess?.available ?? false,
         recentReads: await services.platform.recentFileReads().catch(() => []),
+        // 开关值只有我们这儿有，没有别的权威来源
+        screenshotEnabled: settings.permission.screenshot,
       });
     },
 
@@ -458,6 +474,37 @@ export function createSettingsStore(services: Services): SettingsStore {
       set({ recentReads: recent });
     },
 
+    async setScreenshotEnabled(enabled) {
+      let result: OperationResult;
+      try {
+        result = await services.platform.setScreenshotEnabled(enabled);
+      } catch (error) {
+        return {
+          ok: false,
+          message: toUserFacingError(error, '当前运行环境不支持截屏。'),
+        };
+      }
+
+      if (result.ok) {
+        set({
+          screenshotEnabled: enabled,
+          settings: { ...get().settings, permission: { screenshot: enabled } },
+          // 关掉能力时把上一次的画面一并丢掉：能力都关了，
+        // 还留着一张屏幕快照在内存里没有道理，而且它是最敏感的那份数据。
+          ...(enabled ? {} : { lastScreenshot: null }),
+        });
+      }
+
+      return result;
+    },
+
+    async takeScreenshot() {
+      // 和读文件一样：这是「取数据」，失败直接抛，由调用方决定怎么展示
+      const shot = await services.platform.takeScreenshot();
+      set({ lastScreenshot: shot });
+      return shot;
+    },
+
     async testConnection(config) {
       // 委托给当前 provider。浏览器模式下的离线实现不会发网络请求，
       // 返回的文案里会讲清楚这一点，不让用户误以为真的连通了。
@@ -501,6 +548,8 @@ export function createSettingsStore(services: Services): SettingsStore {
         fileAccessAvailable: fileAccess?.available ?? false,
         // 重置会把授权和读取记录一起清掉
         recentReads: [],
+        screenshotEnabled: fresh.permission.screenshot,
+        lastScreenshot: null,
       });
     },
   }));

@@ -122,6 +122,17 @@ export interface FileAccessSettings {
   directory: string;
 }
 
+/**
+ * 高风险能力的开关（非敏感，进 settings 表）
+ *
+ * 这些能力默认**关闭**（技术方案第 6 节），而且判断在 Rust 侧 ——
+ * 前端这个值表达的是「用户意图」，不是「权限」。
+ */
+export interface PermissionSettings {
+  /** 截屏。开启后助手能抓取主屏画面。 */
+  screenshot: boolean;
+}
+
 /** 全部可持久化的应用设置 */
 export interface AppSettings {
   persona: PersonaConfig;
@@ -135,6 +146,8 @@ export interface AppSettings {
   shortcut: ShortcutSettings;
   /** 本地文件访问的授权范围 */
   fileAccess: FileAccessSettings;
+  /** 高风险能力的开关 */
+  permission: PermissionSettings;
 }
 
 /** 主题模式 */

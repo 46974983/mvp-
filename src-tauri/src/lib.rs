@@ -26,7 +26,9 @@ mod error;
 mod file_access;
 mod models;
 mod notify;
+mod permissions;
 mod redact;
+mod screenshot;
 mod secrets;
 mod shortcut;
 mod tray;
@@ -191,6 +193,9 @@ pub fn run() {
             commands::list_authorized_directory,
             commands::read_authorized_file,
             commands::recent_file_reads,
+            // 截屏（阶段 D）
+            commands::set_screenshot_enabled,
+            commands::take_screenshot,
         ])
         .run(tauri::generate_context!())
         .expect("启动桌面应用失败");

@@ -39,6 +39,7 @@ export type {
   GlobalShortcutStatus,
   NotificationOutcome,
   RecentRead,
+  Screenshot,
 } from '@/services/platform';
 export type { ModelConfigForm } from '@/services/model';
 

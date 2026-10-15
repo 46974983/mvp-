@@ -344,6 +344,21 @@ try {
       (await page.locator(testId('directory-input')).count()) === 0
   );
 
+  // 截屏：阶段 D 里最敏感的一项，浏览器里同样必须如实显示为不可用
+  check(
+    '浏览器模式如实说明抓不了屏幕',
+    await page.locator(testId('screenshot-unavailable')).isVisible()
+  );
+  check(
+    '能力列表把截屏标为未开放',
+    (await page.locator('[data-capability="screenshot"]').getAttribute('data-available')) === 'false'
+  );
+  check(
+    '不可用时不该出现截屏开关和「抓一张试试」',
+    (await page.locator(testId('screenshot-switch')).count()) === 0 &&
+      (await page.locator(testId('take-screenshot')).count()) === 0
+  );
+
   // 先故意填错：期望在字段旁边看到具体原因，而不是笼统的「连接失败」
   await page.fill(testId('model-api-url'), 'not-a-url');
   await page.click(testId('test-connection'));

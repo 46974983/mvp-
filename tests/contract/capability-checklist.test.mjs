@@ -85,7 +85,14 @@ const CAPABILITY_CHECKLIST = [
     // 只为「选择文件夹」这一个动作用，前端拿到的是 pick_directory
     rustPlugins: ['tauri_plugin_dialog::init('],
   },
-  { id: 'screenshot', desktopImplemented: false, desktopCommands: [], rustModules: [] },
+  {
+    id: 'screenshot',
+    desktopImplemented: true,
+    desktopCommands: ['platform_capabilities', 'set_screenshot_enabled', 'take_screenshot'],
+    // permissions.rs 是高风险能力的统一门禁，截屏是第一个用它的人
+    rustModules: ['src-tauri/src/permissions.rs', 'src-tauri/src/screenshot.rs'],
+    rustPlugins: [],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -396,4 +403,64 @@ test('每项能力都在测试里出现过', () => {
       `没有任何测试提到 ${item.id}：新能力必须至少有一条用例说明它在当前环境下的行为`
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// 高风险能力的通用门禁（阶段 D）
+//
+// 截屏是第一个走这套模式的能力，键鼠模拟会照着抄。所以这几条断言写的是
+// **模式**，不是截屏本身 —— 它们要能在下一项能力加进来时继续生效。
+// ---------------------------------------------------------------------------
+
+test('高风险能力默认关闭', () => {
+  const permissions = read('src-tauri/src/permissions.rs');
+
+  assert.match(
+    permissions,
+    /DEFAULT_HIGH_RISK_ENABLED: bool = false/,
+    '高风险能力的默认值必须是关闭 —— 技术方案第 6 节要求「默认关闭高风险自动化能力」'
+  );
+
+  // 前端也要默认关，不能一边默认关一边默认开
+  const storage = read('src/services/storage/browser-storage.ts');
+  assert.match(
+    storage,
+    /DEFAULT_SCREENSHOT_ENABLED = false/,
+    '前端的截屏默认值必须是 false，且与 Rust 侧保持一致'
+  );
+});
+
+test('门开在 Rust 侧，不只靠前端禁用按钮', () => {
+  // 这条是整件事里最容易做错的地方：前端把按钮禁掉只是体验，
+  // 命令是可以被直接 invoke 的。判断必须在 Rust。
+  const take = /pub async fn take_screenshot\([\s\S]*?\n\}/.exec(rustCommands);
+  assert.ok(take, '找不到 take_screenshot 命令');
+  assert.match(
+    take[0],
+    /ensure_enabled\(/,
+    '截屏命令必须先过门禁，不能只靠前端把按钮禁掉'
+  );
+
+  // 开关读自设置表，而不是前端传进来的参数 —— 前端传什么都不能当权限
+  assert.match(
+    take[0],
+    /permission\s*\n?\s*\.screenshot|permission\.screenshot/,
+    '门禁要读我们自己库里的开关，不能拿前端传的参数当许可'
+  );
+});
+
+test('截图不落盘', () => {
+  const shot = read('src-tauri/src/screenshot.rs');
+
+  // 用户的要求是「不落盘，只返回临时引用」。落盘会带来两个问题：
+  // 一是截图里可能有用户自己都没意识到的东西，二是临时文件的清理要额外管。
+  for (const writeCall of ['File::create', 'fs::write', 'OpenOptions', 'create_dir_all', 'tempfile']) {
+    assert.ok(
+      !shot.includes(writeCall),
+      `截屏模块不应出现写文件操作（${writeCall}）—— 截图只在内存里传递`
+    );
+  }
+
+  // 返回的是 data URL，前端可以直接放进 <img src>
+  assert.match(shot, /data:image\/png;base64,/, '应当返回 data URL 而不是文件路径');
 });

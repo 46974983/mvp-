@@ -28,6 +28,7 @@ export type {
   PlatformCapabilitySpec,
   PlatformService,
   RecentRead,
+  Screenshot,
   WindowController,
 } from './types';
 

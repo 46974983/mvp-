@@ -88,6 +88,7 @@ pub mod setting_keys {
     pub const NOTIFICATION_ON_REPLY_COMPLETE: &str = "notification.on_reply_complete";
     pub const SHORTCUT_TOGGLE_WINDOW: &str = "shortcut.toggle_window";
     pub const FILE_ACCESS_DIRECTORY: &str = "file_access.directory";
+    pub const PERMISSION_SCREENSHOT: &str = "permission.screenshot";
 }
 
 // ---------------------------------------------------------------------------
@@ -292,6 +293,45 @@ pub struct GlobalShortcutStatus {
     pub registered: bool,
 }
 
+/// 高风险能力的开关（非敏感，进 settings 表）
+///
+/// 这些能力默认**关闭**（技术方案第 6 节），而且判断在 Rust 侧 —— 见 permissions 模块。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionSettings {
+    /// 截屏。开启后助手能抓取主屏画面。
+    pub screenshot: bool,
+}
+
+impl Default for PermissionSettings {
+    fn default() -> Self {
+        Self {
+            screenshot: crate::permissions::DEFAULT_HIGH_RISK_ENABLED,
+        }
+    }
+}
+
+/// 一次截屏的结果。
+///
+/// **图片只在内存里传递，不落盘** —— `data_url` 是给前端直接放进 `<img src>` 用的，
+/// 用完之后没有任何文件残留。这也是「只返回临时引用」的含义：
+/// 没有路径、没有临时文件，只有一个马上就会被丢掉的字符串。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Screenshot {
+    pub data_url: String,
+    pub width: u32,
+    pub height: u32,
+    /// 编码后的字节数（不含 data URL 前缀）
+    pub bytes: u64,
+    /// 截的是哪块屏
+    pub monitor: String,
+    /// 系统里一共有几块屏 —— 界面上要如实说明**只截了主屏**
+    pub monitor_count: usize,
+    /// 毫秒时间戳
+    pub captured_at: u64,
+}
+
 /// 全部可持久化的应用设置
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -302,6 +342,7 @@ pub struct AppSettings {
     pub notification: NotificationSettings,
     pub shortcut: ShortcutSettings,
     pub file_access: FileAccessSettings,
+    pub permission: PermissionSettings,
 }
 
 impl Default for AppSettings {
@@ -320,6 +361,7 @@ impl Default for AppSettings {
             notification: NotificationSettings::default(),
             shortcut: ShortcutSettings::default(),
             file_access: FileAccessSettings::default(),
+            permission: PermissionSettings::default(),
         }
     }
 }

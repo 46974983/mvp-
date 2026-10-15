@@ -28,8 +28,8 @@ use crate::file_access::ReadAudit;
 use crate::models::{
     AppSettings, AppendMessageInput, AutostartStatus, Conversation, CreateConversationInput,
     FileAccessSettings, FileAccessStatus, FileContent, FileEntry, GlobalShortcutStatus, Message,
-    MessagePatch, ModelConfig, NotifyOutcome, OperationResult, PersonaConfig, RecentRead,
-    ShortcutSettings, StorageLocation, WindowSettings,
+    MessagePatch, ModelConfig, NotifyOutcome, OperationResult, PermissionSettings, PersonaConfig,
+    RecentRead, Screenshot, ShortcutSettings, StorageLocation, WindowSettings,
 };
 use crate::secrets::SecretStore;
 use crate::window::WindowRuntime;
@@ -709,4 +709,59 @@ pub async fn read_authorized_file(
 #[tauri::command]
 pub async fn recent_file_reads(state: State<'_, AppState>) -> Result<Vec<RecentRead>, String> {
     Ok(state.read_audit.recent())
+}
+
+// ---------------------------------------------------------------------------
+// 截屏（阶段 D）
+//
+// 高风险能力的样板：默认关闭、Rust 侧把门、每次留痕。
+// 键鼠模拟照着这一组抄就行 —— 模式写在 permissions 模块里。
+// ---------------------------------------------------------------------------
+
+/// 开启 / 关闭截屏能力。
+///
+/// 开关本身不是敏感信息，存 settings 表；但**判断发生在 Rust 侧**，
+/// 因为命令可以被直接调用，界面上的按钮禁用只是体验，不是约束。
+#[tauri::command]
+pub async fn set_screenshot_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<OperationResult, String> {
+    let db = state.db.clone();
+    blocking(move || {
+        db.save_permission_settings(&PermissionSettings {
+            screenshot: enabled,
+        })
+    })
+    .await?;
+
+    log::info!("截屏能力已{}", if enabled { "开启" } else { "关闭" });
+
+    Ok(OperationResult {
+        ok: true,
+        message: if enabled {
+            "已开启截屏。助手现在可以抓取主屏画面；截图只在内存里传递，不会写到磁盘上。".to_string()
+        } else {
+            "已关闭截屏。助手现在抓不到屏幕内容。".to_string()
+        },
+    })
+}
+
+/// 抓一张主屏截图。
+///
+/// **不落盘**：图片编码成 data URL 直接回给前端，用完就没了。
+#[tauri::command]
+pub async fn take_screenshot(state: State<'_, AppState>) -> Result<Screenshot, String> {
+    let enabled = blocking({
+        let db = state.db.clone();
+        move || db.get_settings()
+    })
+    .await?
+    .permission
+    .screenshot;
+
+    // 门在 Rust 侧：界面不显示按钮、或者按钮被禁用，都不代表这个命令调不动
+    crate::permissions::ensure_enabled(enabled, "截屏")?;
+
+    blocking_fs(crate::screenshot::capture).await
 }
