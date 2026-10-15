@@ -68,7 +68,23 @@ const CAPABILITY_CHECKLIST = [
     rustModules: ['src-tauri/src/shortcut.rs'],
     rustPlugins: ['tauri_plugin_global_shortcut::Builder::new()'],
   },
-  { id: 'file-read', desktopImplemented: false, desktopCommands: [], rustModules: [] },
+  {
+    id: 'file-read',
+    desktopImplemented: true,
+    desktopCommands: [
+      'platform_capabilities',
+      'file_access_status',
+      'pick_directory',
+      'authorize_directory',
+      'revoke_directory',
+      'list_authorized_directory',
+      'read_authorized_file',
+      'recent_file_reads',
+    ],
+    rustModules: ['src-tauri/src/file_access.rs'],
+    // 只为「选择文件夹」这一个动作用，前端拿到的是 pick_directory
+    rustPlugins: ['tauri_plugin_dialog::init('],
+  },
   { id: 'screenshot', desktopImplemented: false, desktopCommands: [], rustModules: [] },
 ];
 

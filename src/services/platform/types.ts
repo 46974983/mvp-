@@ -71,9 +71,9 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   },
   'file-read': {
     label: '读取本地文件',
-    description: '按路径读取本地文本文件',
+    description: '读取你显式授权的那一个文件夹里的文本文件',
     plannedStage: 'D',
-    desktopImplemented: false,
+    desktopImplemented: true,
   },
   screenshot: {
     label: '截屏',
@@ -111,6 +111,51 @@ export interface AutostartStatus {
    * 开发模式下尤其要注意，那时注册的是 target/debug 下的路径。
    */
   exePath: string;
+}
+
+/**
+ * 文件读取的授权状态。
+ *
+ * `directory` 是用户**显式授权**的一个目录，空串表示没有授权 ——
+ * 那时助手一个字节也读不到（技术方案第 6 节第 3 项要求的「路径权限」）。
+ */
+export interface FileAccessStatus {
+  directory: string;
+  /** 这个目录现在还能不能打开。授权之后它可能被删掉或改名。 */
+  available: boolean;
+}
+
+/** 授权目录里的一项 */
+export interface FileEntry {
+  /** 相对授权目录的路径 —— 请求读取时用的就是这个值，而不是绝对路径 */
+  relativePath: string;
+  name: string;
+  isDirectory: boolean;
+  /** 目录恒为 0 */
+  size: number;
+}
+
+/**
+ * 一个文件的内容。
+ *
+ * 比技术方案第 3 节写的 `Promise<string>` 多带了两个字段，
+ * 因为「这份内容不完整」这件事必须能传出来 —— 否则用户会以为读到的是全文。
+ */
+export interface FileContent {
+  relativePath: string;
+  content: string;
+  /** 文件在磁盘上的真实大小 */
+  bytes: number;
+  /** 是否因为超过上限被截断 */
+  truncated: boolean;
+}
+
+/** 一次读取记录，用于回答「它读了我的什么」 */
+export interface RecentRead {
+  relativePath: string;
+  bytes: number;
+  /** 毫秒时间戳 */
+  at: number;
 }
 
 /**
@@ -196,10 +241,51 @@ export interface PlatformService {
   /** 主窗口控制（托盘、关闭行为） */
   readonly window: WindowController;
 
-  /** 读取本地文本文件。阶段 D */
-  readFile(path: string): Promise<string>;
-  /** 截屏，返回图片数据的引用。阶段 D */
+  /**
+   * 查询文件读取的授权状态。
+   *
+   * 查询类方法在不支持的环境里返回事实（空目录、不可用），而不是抛错。
+   */
+  fileAccessStatus(): Promise<FileAccessStatus>;
+
+  /**
+   * 弹出系统的「选择文件夹」对话框，返回用户选的绝对路径；取消则返回 null。
+   *
+   * **这是用户表达授权意图的唯一入口。** 拿到路径还不算授权，
+   * 要再调 `authorizeDirectory` 才生效 —— 中间那一步是给用户看清楚
+   * 「将要授权哪个目录」的机会。
+   */
+  pickDirectory(): Promise<string | null>;
+
+  /** 授权一个目录用于读取。传进来的必须是绝对路径，Rust 侧会校验并规范化。 */
+  authorizeDirectory(path: string): Promise<OperationResult>;
+
+  /** 撤销授权。撤销后立刻读不到任何文件。 */
+  revokeDirectory(): Promise<OperationResult>;
+
+  /** 列出授权目录里某一层的内容。`relativeDir` 为空表示目录本身。 */
+  listAuthorizedDirectory(relativeDir: string): Promise<FileEntry[]>;
+
+  /**
+   * 读取授权目录里的一个文本文件。
+   *
+   * **参数是相对路径，不是绝对路径。** 这样前端连「指定别处」这件事
+   * 都表达不出来，比「收绝对路径再检查范围」少一整类攻击面。
+   * 另外路径上不允许经过符号链接 —— 那会绕过范围检查。
+   */
+  readFile(relativePath: string): Promise<FileContent>;
+
+  /** 最近的读取记录，新的在前。只在内存里，不落盘。 */
+  recentFileReads(): Promise<RecentRead[]>;
+
+  /**
+   * 截屏，返回图片数据的引用。**阶段 D 后续步骤，尚未实现。**
+   *
+   * 技术方案第 6 节把它和键鼠模拟并列，都要求「明确的设置开关、失败提示和权限说明，
+   * 默认关闭」—— 所以它会带着一个默认关的开关和一次显式确认，而不是直接可调。
+   */
   takeScreenshot(): Promise<string>;
+
   /**
    * 发一条系统通知。
    *

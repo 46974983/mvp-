@@ -110,6 +110,18 @@ export interface ShortcutSettings {
   toggleWindow: string;
 }
 
+/**
+ * 本地文件访问的授权范围（非敏感，进 settings 表）
+ *
+ * 存的是**已经过校验的绝对路径**。只允许一个目录：MVP 的需求是
+ * 「让我读某个文件夹里的东西」，一个根目录 + 相对路径已经能表达清楚，
+ * 而且路径检查只有一个基准点，更不容易写错。
+ */
+export interface FileAccessSettings {
+  /** 已授权的目录，空串表示没有授权 —— 那时一个字节也读不到 */
+  directory: string;
+}
+
 /** 全部可持久化的应用设置 */
 export interface AppSettings {
   persona: PersonaConfig;
@@ -121,6 +133,8 @@ export interface AppSettings {
   notification: NotificationSettings;
   /** 全局快捷键偏好 */
   shortcut: ShortcutSettings;
+  /** 本地文件访问的授权范围 */
+  fileAccess: FileAccessSettings;
 }
 
 /** 主题模式 */

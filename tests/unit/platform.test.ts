@@ -302,3 +302,29 @@ describe('全局快捷键', () => {
     expect(status).toEqual({ accelerator: '', registered: false });
   });
 });
+
+// ---------------------------------------------------------------------------
+// 本地文件（阶段 D）
+// ---------------------------------------------------------------------------
+
+describe('本地文件', () => {
+  it('动作类方法抛 UnsupportedCapabilityError', async () => {
+    const platform = createBrowserPlatformService();
+    for (const call of [
+      () => platform.pickDirectory(),
+      () => platform.authorizeDirectory('D://笔记'),
+      () => platform.revokeDirectory(),
+      () => platform.readFile('a.txt'),
+    ]) {
+      await expect(call()).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    }
+  });
+
+  it('查询类方法返回事实：浏览器里没有授权这回事', async () => {
+    const platform = createBrowserPlatformService();
+
+    expect(await platform.fileAccessStatus()).toEqual({ directory: '', available: false });
+    expect(await platform.listAuthorizedDirectory('')).toEqual([]);
+    expect(await platform.recentFileReads()).toEqual([]);
+  });
+});

@@ -67,6 +67,12 @@ export const DEFAULT_NOTIFY_ON_REPLY_COMPLETE = true;
  */
 export const DEFAULT_GLOBAL_SHORTCUT = '';
 
+/**
+ * 文件读取授权目录的默认值：**空**，也就是没有授权。
+ * 与 Rust 侧 DEFAULT_FILE_DIRECTORY 保持一致 —— 阶段 D 的能力默认关闭。
+ */
+export const DEFAULT_FILE_DIRECTORY = '';
+
 export function defaultSettings(): AppSettings {
   return {
     persona: { ...DEFAULT_PERSONA },
@@ -74,6 +80,7 @@ export function defaultSettings(): AppSettings {
     window: { closeToTray: DEFAULT_CLOSE_TO_TRAY },
     notification: { onReplyComplete: DEFAULT_NOTIFY_ON_REPLY_COMPLETE },
     shortcut: { toggleWindow: DEFAULT_GLOBAL_SHORTCUT },
+    fileAccess: { directory: DEFAULT_FILE_DIRECTORY },
   };
 }
 

@@ -23,6 +23,7 @@ mod chat;
 mod commands;
 mod db;
 mod error;
+mod file_access;
 mod models;
 mod notify;
 mod redact;
@@ -38,6 +39,7 @@ use tauri::Manager;
 
 use crate::commands::AppState;
 use crate::db::Database;
+use crate::file_access::ReadAudit;
 use crate::secrets::SecretStore;
 use crate::window::WindowRuntime;
 
@@ -69,6 +71,8 @@ pub fn run() {
             None,
         ))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // 只为「选择文件夹」这一个动作用，而且只在 Rust 侧 —— 前端拿到的是 pick_directory
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let database = Database::open(&data_dir.join(DATABASE_FILE))?;
@@ -85,6 +89,7 @@ pub fn run() {
                 secrets: SecretStore::new(),
                 cancel: Arc::new(AtomicBool::new(false)),
                 window: WindowRuntime::new(settings.window.close_to_tray),
+                read_audit: ReadAudit::default(),
             });
 
             // 托盘必须在 state 之后建：菜单里的「退出」要能改 state
@@ -178,6 +183,14 @@ pub fn run() {
             // 全局快捷键（阶段 C）
             commands::global_shortcut_status,
             commands::set_global_shortcut,
+            // 本地文件读取（阶段 D）
+            commands::file_access_status,
+            commands::pick_directory,
+            commands::authorize_directory,
+            commands::revoke_directory,
+            commands::list_authorized_directory,
+            commands::read_authorized_file,
+            commands::recent_file_reads,
         ])
         .run(tauri::generate_context!())
         .expect("启动桌面应用失败");

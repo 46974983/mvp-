@@ -19,9 +19,9 @@ use uuid::Uuid;
 use crate::error::{AppError, AppResult};
 use crate::models::{
     AppSettings, AppendMessageInput, Conversation, CreateConversationInput,
-    DEFAULT_CONVERSATION_TITLE, Message, MessagePatch, NotificationSettings, PersistedModelConfig,
-    PersonaConfig, ShortcutSettings, StorageLocation, WindowSettings, derive_title_from_message,
-    normalize_title,
+    DEFAULT_CONVERSATION_TITLE, FileAccessSettings, Message, MessagePatch, NotificationSettings,
+    PersistedModelConfig, PersonaConfig, ShortcutSettings, StorageLocation, WindowSettings,
+    derive_title_from_message, normalize_title,
 };
 
 /// 迁移脚本按版本号排列，只增不改：已经跑过的版本在用户机器上不会再跑一次。
@@ -453,6 +453,10 @@ impl Database {
                 toggle_window: lookup(crate::models::setting_keys::SHORTCUT_TOGGLE_WINDOW)
                     .unwrap_or(defaults.shortcut.toggle_window),
             },
+            file_access: FileAccessSettings {
+                directory: lookup(crate::models::setting_keys::FILE_ACCESS_DIRECTORY)
+                    .unwrap_or(defaults.file_access.directory),
+            },
         })
     }
 
@@ -516,6 +520,14 @@ impl Database {
         self.write_settings(&[(
             crate::models::setting_keys::SHORTCUT_TOGGLE_WINDOW,
             shortcut.toggle_window.trim(),
+        )])
+    }
+
+    /// 写本地文件访问的授权目录
+    pub fn save_file_access_settings(&self, file_access: &FileAccessSettings) -> AppResult<()> {
+        self.write_settings(&[(
+            crate::models::setting_keys::FILE_ACCESS_DIRECTORY,
+            file_access.directory.trim(),
         )])
     }
 
@@ -583,7 +595,7 @@ fn map_message(row: &Row<'_>) -> rusqlite::Result<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::DEFAULT_GLOBAL_SHORTCUT;
+    use crate::models::{DEFAULT_FILE_DIRECTORY, DEFAULT_GLOBAL_SHORTCUT};
 
     fn database() -> Database {
         Database::open_in_memory().expect("内存库应该能打开")
@@ -1061,6 +1073,66 @@ mod tests {
                 .shortcut
                 .toggle_window
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn file_access_defaults_to_no_authorization() {
+        // 阶段 D 的能力默认关闭：不授权就一个字节都读不到
+        let database = database();
+        assert_eq!(
+            database.get_settings().unwrap().file_access.directory,
+            DEFAULT_FILE_DIRECTORY
+        );
+        assert!(DEFAULT_FILE_DIRECTORY.is_empty());
+    }
+
+    #[test]
+    fn file_access_directory_round_trips_and_is_trimmed() {
+        let database = database();
+
+        database
+            .save_file_access_settings(&FileAccessSettings {
+                directory: "  D:\\笔记  ".to_string(),
+            })
+            .unwrap();
+        assert_eq!(
+            database.get_settings().unwrap().file_access.directory,
+            "D:\\笔记"
+        );
+
+        // 撤销授权存空串
+        database
+            .save_file_access_settings(&FileAccessSettings {
+                directory: String::new(),
+            })
+            .unwrap();
+        assert!(
+            database
+                .get_settings()
+                .unwrap()
+                .file_access
+                .directory
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reset_clears_the_file_access_authorization() {
+        // 重置本地数据必须把授权一起清掉 —— 授权本身就是「本地数据」的一部分。
+        // 留着它会让用户以为重置之后助手还能读文件。
+        let database = database();
+        database
+            .save_file_access_settings(&FileAccessSettings {
+                directory: "D:\\笔记".to_string(),
+            })
+            .unwrap();
+
+        database.reset_all().unwrap();
+
+        assert_eq!(
+            database.get_settings().unwrap().file_access.directory,
+            DEFAULT_FILE_DIRECTORY
         );
     }
 

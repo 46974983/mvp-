@@ -14,11 +14,14 @@
 import {
   UnsupportedCapabilityError,
   type AutostartStatus,
+  type FileAccessStatus,
+  type FileEntry,
   type GlobalShortcutStatus,
   type NotificationOutcome,
   type NotificationRequest,
   type PlatformCapability,
   type PlatformService,
+  type RecentRead,
 } from './types';
 
 interface NotificationApi {
@@ -63,10 +66,6 @@ export function createBrowserPlatformService(): PlatformService {
       async setCloseToTray() {
         unsupported('tray');
       },
-    },
-
-    async readFile() {
-      unsupported('file-read');
     },
 
     async takeScreenshot() {
@@ -116,6 +115,39 @@ export function createBrowserPlatformService(): PlatformService {
       // 浏览器里没有「开机自启」这回事，所以如实返回 false —— 这是事实，不是失败。
       // 界面会先看能力集合，不会把这个值当成一种状态来展示。
       return { enabled: false, exePath: '' };
+    },
+
+    // ---- 本地文件（阶段 D） ----
+    //
+    // 浏览器读不了本地文件 —— 网页拿到的只有用户主动拖进来的东西。
+    // 所以这里的查询方法返回「没有授权」这个事实，动作方法一律抛不支持。
+
+    async fileAccessStatus(): Promise<FileAccessStatus> {
+      return { directory: '', available: false };
+    },
+
+    async pickDirectory() {
+      unsupported('file-read');
+    },
+
+    async authorizeDirectory() {
+      unsupported('file-read');
+    },
+
+    async revokeDirectory() {
+      unsupported('file-read');
+    },
+
+    async listAuthorizedDirectory(): Promise<FileEntry[]> {
+      return [];
+    },
+
+    async readFile() {
+      unsupported('file-read');
+    },
+
+    async recentFileReads(): Promise<RecentRead[]> {
+      return [];
     },
 
     async setAutostart() {

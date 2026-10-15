@@ -20,11 +20,15 @@ import {
   PLATFORM_CAPABILITIES,
   UnsupportedCapabilityError,
   type AutostartStatus,
+  type FileAccessStatus,
+  type FileContent,
+  type FileEntry,
   type GlobalShortcutStatus,
   type NotificationOutcome,
   type NotificationRequest,
   type PlatformCapability,
   type PlatformService,
+  type RecentRead,
 } from './types';
 
 const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set(PLATFORM_CAPABILITIES);
@@ -59,10 +63,6 @@ export function createTauriPlatformService(): PlatformService {
       setCloseToTray: (enabled: boolean) => invoke<void>('set_close_to_tray', { enabled }),
     },
 
-    async readFile() {
-      unsupported('file-read');
-    },
-
     async takeScreenshot() {
       unsupported('screenshot');
     },
@@ -86,6 +86,27 @@ export function createTauriPlatformService(): PlatformService {
     },
 
     autostartStatus: () => invoke<AutostartStatus>('autostart_status'),
+
+    // ---- 本地文件（阶段 D） ----
+    //
+    // 注意 readFile 的参数：收的是**相对授权目录的路径**。
+    // 前端连「指定别处」这件事都表达不出来，范围检查全在 Rust 侧一处。
+
+    fileAccessStatus: () => invoke<FileAccessStatus>('file_access_status'),
+
+    pickDirectory: () => invoke<string | null>('pick_directory'),
+
+    authorizeDirectory: (path: string) => invoke<OperationResult>('authorize_directory', { path }),
+
+    revokeDirectory: () => invoke<OperationResult>('revoke_directory'),
+
+    listAuthorizedDirectory: (relativeDir: string) =>
+      invoke<FileEntry[]>('list_authorized_directory', { relativeDir }),
+
+    readFile: (relativePath: string) =>
+      invoke<FileContent>('read_authorized_file', { relativePath }),
+
+    recentFileReads: () => invoke<RecentRead[]>('recent_file_reads'),
 
     globalShortcutStatus: () => invoke<GlobalShortcutStatus>('global_shortcut_status'),
 

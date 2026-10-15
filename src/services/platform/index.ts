@@ -18,12 +18,16 @@ export {
 } from './types';
 export type {
   AutostartStatus,
+  FileAccessStatus,
+  FileContent,
+  FileEntry,
   GlobalShortcutStatus,
   NotificationOutcome,
   NotificationRequest,
   PlatformCapability,
   PlatformCapabilitySpec,
   PlatformService,
+  RecentRead,
   WindowController,
 } from './types';
 

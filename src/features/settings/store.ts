@@ -28,7 +28,13 @@ import type {
   StorageLocation,
 } from '@/types';
 import type { Services } from '@/services/container';
-import type { NotificationOutcome, PlatformCapability } from '@/services/platform';
+import type {
+  FileContent,
+  FileEntry,
+  NotificationOutcome,
+  PlatformCapability,
+  RecentRead,
+} from '@/services/platform';
 import { DEFAULT_MODEL_ENDPOINT, defaultSettings } from '@/services/storage';
 import { toUserFacingError } from '@/lib/log';
 import { validatePersona } from './schema';
@@ -74,6 +80,15 @@ export interface SettingsState {
   globalShortcut: string;
   /** 这个快捷键当前是否真的注册成功。可能为 false —— 组合键被别的程序占了 */
   globalShortcutRegistered: boolean;
+  /**
+   * 已授权的读取目录（空串表示没有授权，那时一个字节也读不到）。
+   * 阶段 D 的「路径权限」就是这个值。
+   */
+  fileAccessDirectory: string;
+  /** 这个目录现在还能不能打开（授权之后可能被删掉或改名） */
+  fileAccessAvailable: boolean;
+  /** 最近的读取记录。回答「它刚才读了我的什么」—— 只在内存里，不落盘。 */
+  recentReads: RecentRead[];
 
   load(): Promise<void>;
   savePersona(persona: PersonaConfig): Promise<OperationResult>;
@@ -93,6 +108,18 @@ export interface SettingsState {
   setAutostart(enabled: boolean): Promise<OperationResult>;
   /** 设置全局快捷键；传 null 关闭 */
   setGlobalShortcut(accelerator: string | null): Promise<OperationResult>;
+  /** 弹出系统目录选择框；用户取消返回 null */
+  pickDirectory(): Promise<string | null>;
+  /** 授权一个目录用于读取 */
+  authorizeDirectory(path: string): Promise<OperationResult>;
+  /** 撤销文件读取授权 */
+  revokeDirectory(): Promise<OperationResult>;
+  /** 读取授权目录里的一个文本文件（相对路径）。失败时抛出一句可展示的话。 */
+  readFile(relativePath: string): Promise<FileContent>;
+  /** 列出授权目录里某一层的内容。`relativeDir` 为空表示目录本身。 */
+  listAuthorizedDirectory(relativeDir: string): Promise<FileEntry[]>;
+  /** 刷新「最近读取」列表 */
+  refreshRecentReads(): Promise<void>;
   testConnection(config: ModelConfig): Promise<OperationResult>;
   resetAll(): Promise<void>;
 }
@@ -141,22 +168,35 @@ export function createSettingsStore(services: Services): SettingsStore {
     autostartExePath: '',
     globalShortcut: defaultSettings().shortcut.toggleWindow,
     globalShortcutRegistered: false,
+    fileAccessDirectory: defaultSettings().fileAccess.directory,
+    fileAccessAvailable: false,
+    recentReads: [],
 
     async load() {
       // 五件事互不依赖，并行拿。任何一件失败都不该让整个设置页打不开，
       // 所以「是否已存 Key」「位置」「凭据可用性」「能力集合」都各自兜底。
-      const [settings, apiKeyStored, location, credentialStatus, capabilities, autostart, shortcut] =
-        await Promise.all([
-          settingsRepo.getSettings(),
-          settingsRepo.hasStoredApiKey().catch(() => false),
-          services.storage.resolveLocation().catch(() => null),
-          services.storage.probeCredentialStorage().catch(() => null),
-          probeCapabilities(),
-          // 自启状态问系统，不读我们的设置表 —— 用户可能在任务管理器里改过
-          services.platform.autostartStatus().catch(() => null),
-          // 快捷键的「值」存在我们这儿，「注册上没有」只有运行期知道，所以两者都要问
-          services.platform.globalShortcutStatus().catch(() => null),
-        ]);
+      const [
+        settings,
+        apiKeyStored,
+        location,
+        credentialStatus,
+        capabilities,
+        autostart,
+        shortcut,
+        fileAccess,
+      ] = await Promise.all([
+        settingsRepo.getSettings(),
+        settingsRepo.hasStoredApiKey().catch(() => false),
+        services.storage.resolveLocation().catch(() => null),
+        services.storage.probeCredentialStorage().catch(() => null),
+        probeCapabilities(),
+        // 自启状态问系统，不读我们的设置表 —— 用户可能在任务管理器里改过
+        services.platform.autostartStatus().catch(() => null),
+        // 快捷键的「值」存在我们这儿，「注册上没有」只有运行期知道，所以两者都要问
+        services.platform.globalShortcutStatus().catch(() => null),
+        // 授权的目录可能在授权之后被删掉或改名，所以要真的去看一眼还在不在
+        services.platform.fileAccessStatus().catch(() => null),
+      ]);
 
       set({
         settings,
@@ -179,6 +219,10 @@ export function createSettingsStore(services: Services): SettingsStore {
         // 值以设置表为准，注册与否以运行期为准
         globalShortcut: settings.shortcut.toggleWindow,
         globalShortcutRegistered: shortcut?.registered ?? false,
+        // 授权目录以运行期报告为准：库里存着但目录没了，要如实显示为不可用
+        fileAccessDirectory: fileAccess?.directory ?? settings.fileAccess.directory,
+        fileAccessAvailable: fileAccess?.available ?? false,
+        recentReads: await services.platform.recentFileReads().catch(() => []),
       });
     },
 
@@ -350,6 +394,70 @@ export function createSettingsStore(services: Services): SettingsStore {
       return result;
     },
 
+    async pickDirectory() {
+      return services.platform.pickDirectory();
+    },
+
+    async authorizeDirectory(path) {
+      let result: OperationResult;
+      try {
+        result = await services.platform.authorizeDirectory(path);
+      } catch (error) {
+        return {
+          ok: false,
+          message: toUserFacingError(error, '当前运行环境不支持读取本地文件。'),
+        };
+      }
+
+      // 只有成功才更新界面：失败时 Rust 侧没有落盘，界面跟着变会显示一个假的授权范围
+      if (result.ok) {
+        const status = await services.platform.fileAccessStatus().catch(() => null);
+        set({
+          fileAccessDirectory: status?.directory ?? path,
+          fileAccessAvailable: status?.available ?? true,
+          // 换目录时 Rust 会清掉旧的读取记录，这里跟着清，两边保持一致
+          recentReads: [],
+        });
+      }
+
+      return result;
+    },
+
+    async revokeDirectory() {
+      let result: OperationResult;
+      try {
+        result = await services.platform.revokeDirectory();
+      } catch (error) {
+        return {
+          ok: false,
+          message: toUserFacingError(error, '当前运行环境不支持读取本地文件。'),
+        };
+      }
+
+      if (result.ok) {
+        set({ fileAccessDirectory: '', fileAccessAvailable: false, recentReads: [] });
+      }
+
+      return result;
+    },
+
+    async readFile(relativePath) {
+      // 读文件是「取数据」而不是「做动作」，所以失败直接抛 —— 让调用方决定怎么展示。
+      // 不像上面几个动作那样返回 OperationResult，是因为文件内容本身要传回去。
+      const content = await services.platform.readFile(relativePath);
+      await get().refreshRecentReads();
+      return content;
+    },
+
+    async listAuthorizedDirectory(relativeDir) {
+      return services.platform.listAuthorizedDirectory(relativeDir);
+    },
+
+    async refreshRecentReads() {
+      const recent = await services.platform.recentFileReads().catch(() => []);
+      set({ recentReads: recent });
+    },
+
     async testConnection(config) {
       // 委托给当前 provider。浏览器模式下的离线实现不会发网络请求，
       // 返回的文案里会讲清楚这一点，不让用户误以为真的连通了。
@@ -362,15 +470,18 @@ export function createSettingsStore(services: Services): SettingsStore {
       await services.storage.reset();
 
       // 位置、凭据状态、能力集合和自启状态都重新探测一次（重置后可能变化）
-      const [location, credentialStatus, capabilities, autostart, shortcut] = await Promise.all([
-        services.storage.resolveLocation().catch(() => null),
-        services.storage.probeCredentialStorage().catch(() => null),
-        probeCapabilities(),
-        // 自启属于系统设置，重置本地数据**不会**动它，这里只是把真实状态再读一遍
-        services.platform.autostartStatus().catch(() => null),
-        // 快捷键会被重置清掉，但系统里注册的那个还在，所以要重新问一次
-        services.platform.globalShortcutStatus().catch(() => null),
-      ]);
+      const [location, credentialStatus, capabilities, autostart, shortcut, fileAccess] =
+        await Promise.all([
+          services.storage.resolveLocation().catch(() => null),
+          services.storage.probeCredentialStorage().catch(() => null),
+          probeCapabilities(),
+          // 自启属于系统设置，重置本地数据**不会**动它，这里只是把真实状态再读一遍
+          services.platform.autostartStatus().catch(() => null),
+          // 快捷键会被重置清掉，但系统里注册的那个还在，所以要重新问一次
+          services.platform.globalShortcutStatus().catch(() => null),
+          // 授权范围属于本地数据，重置会清掉
+          services.platform.fileAccessStatus().catch(() => null),
+        ]);
 
       const fresh = defaultSettings();
       set({
@@ -386,6 +497,10 @@ export function createSettingsStore(services: Services): SettingsStore {
         autostartExePath: autostart?.exePath ?? get().autostartExePath,
         globalShortcut: shortcut?.accelerator ?? fresh.shortcut.toggleWindow,
         globalShortcutRegistered: shortcut?.registered ?? false,
+        fileAccessDirectory: fileAccess?.directory ?? fresh.fileAccess.directory,
+        fileAccessAvailable: fileAccess?.available ?? false,
+        // 重置会把授权和读取记录一起清掉
+        recentReads: [],
       });
     },
   }));

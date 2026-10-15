@@ -1,13 +1,19 @@
 //! Tauri 命令层 —— 前端能碰到的全部能力，就是这个文件的全部内容
 //!
 //! 设计原则（技术方案第 3 节「前端只能调用窄接口」）：
-//!   - 每个命令只做一件明确的事，参数里**没有路径**、没有 shell、没有 URL 白名单需要维护。
-//!   - 数据库操作一律 `spawn_blocking`：SQLite 是阻塞的，不能占住异步运行时的线程。
+//!   - 每个命令只做一件明确的事，参数里**没有 shell、没有 URL 白名单需要维护**。
+//!   - 数据库和文件操作一律 `spawn_blocking`：两者都是阻塞的，不能占住异步运行时的线程。
 //!   - 所有错误转成「一句话」，直接给用户看；转换发生在 `AppError::to_string()`，
 //!     而 `AppError` 的构造处都过了脱敏。
 //!
-//! 这里没有任何一条命令能读任意文件、执行命令或访问网络地址之外的东西 ——
-//! 文件读取、截屏、键鼠模拟属于技术方案第 6 节里更靠后的阶段，本阶段不开放。
+//! ## 关于文件读取（阶段 D）
+//!
+//! 唯一能碰到文件系统的命令是 `read_authorized_file` 与 `list_authorized_directory`，
+//! 而它们的参数是**相对授权目录的路径**，不是绝对路径 ——
+//! 前端连表达「读 D:\别的地方」这件事的能力都没有。真正的检查在
+//! `file_access::resolve_within_root`，那里修了三条路径逃逸防线。
+//!
+//! 键鼠模拟（技术方案第 6 节第 5 项）还没有做。
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -18,15 +24,17 @@ use tauri::{AppHandle, State};
 use crate::chat::{self, ChatRequest, StreamEvent, StreamResult};
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
+use crate::file_access::ReadAudit;
 use crate::models::{
     AppSettings, AppendMessageInput, AutostartStatus, Conversation, CreateConversationInput,
-    GlobalShortcutStatus, Message, MessagePatch, ModelConfig, NotifyOutcome, OperationResult,
-    PersonaConfig, ShortcutSettings, StorageLocation, WindowSettings,
+    FileAccessSettings, FileAccessStatus, FileContent, FileEntry, GlobalShortcutStatus, Message,
+    MessagePatch, ModelConfig, NotifyOutcome, OperationResult, PersonaConfig, RecentRead,
+    ShortcutSettings, StorageLocation, WindowSettings,
 };
 use crate::secrets::SecretStore;
 use crate::window::WindowRuntime;
 
-/// 应用运行期状态。四个字段就够：数据库、凭据存储、当前请求的取消标记、窗口开关。
+/// 应用运行期状态：数据库、凭据存储、当前请求的取消标记、窗口开关、读取记录。
 pub struct AppState {
     pub db: Database,
     pub secrets: SecretStore,
@@ -35,6 +43,8 @@ pub struct AppState {
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
     /// 「关闭窗口时缩到托盘」等窗口状态，兼作数据库的缓存
     pub window: WindowRuntime,
+    /// 最近的读取记录。**只在内存里**，见 file_access.rs 的说明。
+    pub read_audit: ReadAudit,
 }
 
 /// 把阻塞的数据库操作挪到阻塞线程池，并把 `AppError` 翻成面向用户的字符串
@@ -48,6 +58,41 @@ where
         Ok(Err(error)) => Err(error.to_string()),
         Err(error) => Err(format!("后台任务执行失败：{error}")),
     }
+}
+
+/// 把文件系统操作挪到阻塞线程池。
+///
+/// 单独一个函数是因为返回类型不同：文件操作直接给用户可读的字符串错误，
+/// 不经过 `AppError`。而且文件 I/O 可能很慢（网络盘、大目录），
+/// 放在异步运行时的线程上会拖住别的命令。
+async fn blocking_fs<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(work).await {
+        Ok(result) => result,
+        Err(error) => Err(format!("后台任务执行失败：{error}")),
+    }
+}
+
+/// 取当前授权的根目录；没授权就返回一句能看懂的话。
+async fn require_root(db: Database) -> Result<std::path::PathBuf, String> {
+    let settings = blocking(move || db.get_settings()).await?;
+    let directory = settings.file_access.directory;
+
+    if directory.trim().is_empty() {
+        return Err("还没有授权任何目录。请先在设置里的「本地文件」中选一个文件夹。".to_string());
+    }
+
+    let root = std::path::PathBuf::from(&directory);
+    if !root.is_dir() {
+        return Err(format!(
+            "授权的目录现在打不开了：{directory}。它可能被删掉或改名了，请重新授权。"
+        ));
+    }
+
+    Ok(root)
 }
 
 /// 取这次请求要用的 Key：优先用前端刚填的，其次用系统凭据存储里已经保存的
@@ -522,4 +567,146 @@ pub async fn set_global_shortcut(
     }
 
     Ok(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// 本地文件读取（阶段 D）
+//
+// 这是全项目权限最重的一组命令，所以把边界写在这里：
+//   - **参数是相对路径，不是绝对路径。** 前端连「指定别处」这件事都表达不出来。
+//   - **读取范围由用户显式授权的一个目录决定**，没授权就什么都读不到。
+//   - **每一次读取都留痕**（最近若干条，只在内存里），用户能看见「它读了我的什么」。
+// ---------------------------------------------------------------------------
+
+/// 当前的文件访问状态：授权了哪个目录、它现在还能不能打开。
+#[tauri::command]
+pub async fn file_access_status(state: State<'_, AppState>) -> Result<FileAccessStatus, String> {
+    let db = state.db.clone();
+    let directory = blocking(move || db.get_settings())
+        .await?
+        .file_access
+        .directory;
+
+    // 目录可能在授权之后被删掉或改名，这时候要如实显示为不可用
+    let available = !directory.trim().is_empty() && std::path::Path::new(&directory).is_dir();
+
+    Ok(FileAccessStatus {
+        directory,
+        available,
+    })
+}
+
+/// 弹出系统的「选择文件夹」对话框，返回用户选的绝对路径。
+///
+/// 走 dialog 插件，但**只在 Rust 侧使用** —— 前端拿到的是这一条命令，
+/// 插件的权限没有放开任何一项。
+#[tauri::command]
+pub async fn pick_directory(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app.dialog().file().blocking_pick_folder();
+    Ok(picked
+        .and_then(|path| path.into_path().ok())
+        .map(|path| path.display().to_string()))
+}
+
+/// 授权一个目录用于读取。
+///
+/// 这里就是「确认」这一步：用户明确指定了目录，我们校验它真实存在且确实是目录，
+/// 并把**规范化后的绝对路径**存下来，作为之后所有路径检查的唯一基准。
+#[tauri::command]
+pub async fn authorize_directory(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<OperationResult, String> {
+    let root = match crate::file_access::validate_authorized_root(&path) {
+        Ok(root) => root,
+        Err(reason) => {
+            return Ok(OperationResult {
+                ok: false,
+                message: reason,
+            });
+        }
+    };
+
+    let warning = crate::file_access::broad_scope_warning(&root);
+    let stored = root.display().to_string();
+
+    let db = state.db.clone();
+    let to_save = stored.clone();
+    blocking(move || db.save_file_access_settings(&FileAccessSettings { directory: to_save }))
+        .await?;
+
+    // 换了目录就清掉旧的读取记录：那是上一个目录里的事，留着会让人误以为读过新目录
+    state.read_audit.clear();
+
+    log::info!(
+        "本地文件访问的授权目录已更新（范围过宽提醒：{}）",
+        warning.is_some()
+    );
+
+    Ok(OperationResult {
+        ok: true,
+        message: match warning {
+            Some(warning) => format!("已授权读取 {stored}。提醒：{warning}"),
+            None => format!("已授权读取 {stored}。助手只能读这个目录里的文件。"),
+        },
+    })
+}
+
+/// 撤销授权。撤销后立刻读不到任何文件，已经记下的读取记录也一并清掉。
+#[tauri::command]
+pub async fn revoke_directory(state: State<'_, AppState>) -> Result<OperationResult, String> {
+    let db = state.db.clone();
+    blocking(move || {
+        db.save_file_access_settings(&FileAccessSettings {
+            directory: String::new(),
+        })
+    })
+    .await?;
+
+    state.read_audit.clear();
+    log::info!("本地文件访问的授权已撤销");
+
+    Ok(OperationResult {
+        ok: true,
+        message: "已撤销文件读取授权。助手现在读不到任何本地文件。".to_string(),
+    })
+}
+
+/// 列出授权目录里某一层的内容。`relativeDir` 为空表示目录本身。
+#[tauri::command]
+pub async fn list_authorized_directory(
+    state: State<'_, AppState>,
+    relative_dir: String,
+) -> Result<Vec<FileEntry>, String> {
+    let root = require_root(state.db.clone()).await?;
+    blocking_fs(move || crate::file_access::list_directory(&root, &relative_dir)).await
+}
+
+/// 读一个文本文件。`relativePath` 是相对授权目录的路径。
+#[tauri::command]
+pub async fn read_authorized_file(
+    state: State<'_, AppState>,
+    relative_path: String,
+) -> Result<FileContent, String> {
+    let root = require_root(state.db.clone()).await?;
+    let audit_path = relative_path.trim().to_string();
+
+    let content = blocking_fs({
+        let root = root.clone();
+        move || crate::file_access::read_text_file(&root, &relative_path)
+    })
+    .await?;
+
+    // 成功读取才留痕 —— 失败的尝试不进列表，那会让「它读过什么」变得嘈杂
+    state.read_audit.record(&audit_path, content.bytes);
+
+    Ok(content)
+}
+
+/// 最近的读取记录，新的在前。界面用它回答「它刚才读了我的什么」。
+#[tauri::command]
+pub async fn recent_file_reads(state: State<'_, AppState>) -> Result<Vec<RecentRead>, String> {
+    Ok(state.read_audit.recent())
 }

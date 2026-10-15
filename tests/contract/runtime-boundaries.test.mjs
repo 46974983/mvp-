@@ -242,42 +242,72 @@ test('capabilities 只放行 core:default，不放任何插件权限', () => {
 test('没有引入任何高危 Tauri 插件', () => {
   const cargo = readFile('src-tauri/Cargo.toml');
 
-  // 判定标准不是「阶段 C 能不能用」，而是**这些插件会不会给 WebView 开出一个大口子**：
+  // 判定标准是**这个插件的能力会不会直接喂给 WebView**，而不是「插件本身是不是好东西」。
+  //
   //   fs / shell / http / process —— 前端一旦能碰，就等于绕过了整个 Rust 侧的约束
-  //   dialog / opener           —— 能让前端拉起系统 UI 去打开任意路径
-  // 阶段 C 引入的 autostart / global-shortcut / notification 不在此列：
-  // 它们只在 Rust 侧使用，前端碰不到，而且都被能力完整性清单逐项盯着。
-  const dangerous = [
-    'tauri-plugin-fs',
-    'tauri-plugin-shell',
-    'tauri-plugin-http',
-    'tauri-plugin-dialog',
-    'tauri-plugin-process',
-    'tauri-plugin-opener',
-  ];
+  //
+  // 阶段 C 的 notification / autostart / global-shortcut 和阶段 D 的 dialog
+  // 都不在此列：它们**只在 Rust 侧使用**（前端拿到的是自己的窄命令），
+  // 而且 capabilities 里没有为它们放开任何权限 —— 这一条另有测试盯着。
+  //
+  // dialog 是阶段 D 加进来的，只用于「选择文件夹」这一个动作。
+  // 早先这里把它列为高危，理由是「能让前端拉起系统 UI 去打开任意路径」；
+  // 那个理由成立的**前提是前端能调它的 JS API** —— 现在这个前提不成立，
+  // 所以按实际危害重新判定，而不是留着一条已经不表达任何约束的禁令。
+  const dangerous = ['tauri-plugin-fs', 'tauri-plugin-shell', 'tauri-plugin-http', 'tauri-plugin-process'];
 
   for (const plugin of dangerous) {
     assert.ok(!cargo.includes(plugin), `不应引入 ${plugin}：它会给 WebView 开出直接通道`);
   }
 });
 
-test('Rust 侧没有进程执行，命令参数里没有路径', () => {
+test('Rust 侧没有进程执行', () => {
   for (const file of rustFiles) {
     assert.ok(
       !file.content.includes('std::process::Command') && !file.content.includes('process::Command'),
-      `${file.relative} 出现了进程执行：那不是本阶段该有的能力`
+      `${file.relative} 出现了进程执行：那不是本项目该有的能力`
     );
   }
+});
 
+test('文件访问的边界：前端只能给相对路径，绝对路径只走授权那一条', () => {
   const commands = readRust('src/commands.rs');
-  assert.ok(
-    !/\bpath\s*:/.test(commands),
-    '命令参数里不应出现路径：前端只能调用窄接口，不能指定任意文件位置'
-  );
+
+  // 命令层不做实际的文件读写 —— 读写都在 file_access.rs 里，那里有路径检查。
+  // 命令层一旦自己开文件，就等于绕开了那套检查。
   assert.ok(
     !commands.includes('read_to_string') && !commands.includes('remove_file'),
-    '命令层不应直接读写文件'
+    '命令层不应直接读写文件，文件访问一律经 file_access 模块'
   );
+
+  // 读文件和列目录的参数必须叫 relative_*，收的就是相对路径。
+  // 这条断言的作用是：以后谁想把 read_authorized_file 改成收绝对路径，
+  // 必须先在这里改掉这个命名，而改的时候会看到上面这段说明。
+  assert.match(
+    commands,
+    /pub async fn read_authorized_file\([\s\S]*?relative_path: String/,
+    '读取命令必须收「相对授权目录的路径」，不能收绝对路径'
+  );
+  assert.match(
+    commands,
+    /pub async fn list_authorized_directory\([\s\S]*?relative_dir: String/,
+    '列目录命令同样只收相对路径'
+  );
+
+  // 唯一允许出现绝对路径的地方是授权命令，而且必须过 validate_authorized_root
+  const authorize = /pub async fn authorize_directory\([\s\S]*?\n\}/.exec(commands);
+  assert.ok(authorize, '未能找到 authorize_directory');
+  assert.match(
+    authorize[0],
+    /validate_authorized_root\(/,
+    '授权命令必须用 validate_authorized_root 校验目录，不能直接存用户给的字符串'
+  );
+
+  // 逃逸防护本身要有测试盯着 —— 这是安全边界，没测试的边界等于没有
+  const fileAccess = readRust('src-tauri/src/file_access.rs');
+  assert.match(fileAccess, /fn resolve_within_root/, '路径解析必须集中在 resolve_within_root 一处');
+  assert.match(fileAccess, /Component::ParentDir/, '必须显式拒绝 `..` 上跳');
+  assert.match(fileAccess, /fn ensure_no_symlink/, '必须拒绝路径经过符号链接');
 });
 
 test('capabilities 收紧的同时，模型层的两个实现仍然都在', () => {

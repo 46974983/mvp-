@@ -45,6 +45,13 @@ pub const DEFAULT_NOTIFY_ON_REPLY_COMPLETE: bool = true;
 /// 必须由用户主动选择，不能默认替他决定。
 pub const DEFAULT_GLOBAL_SHORTCUT: &str = "";
 
+/// 授权目录的默认值：**空**，也就是没有授权任何目录。
+///
+/// 阶段 D 的能力全都默认关闭。方案第 6 节的原话是
+/// 「键鼠模拟和截屏增加明确的设置开关、失败提示和权限说明，默认关闭高风险自动化能力」，
+/// 文件读取还额外要求「路径权限」—— 用户不显式授权，就一个字节也读不到。
+pub const DEFAULT_FILE_DIRECTORY: &str = "";
+
 /// 去掉首尾空白；全空白则回退到「未命名会话」
 pub fn normalize_title(title: &str) -> String {
     let trimmed = title.trim();
@@ -80,6 +87,7 @@ pub mod setting_keys {
     pub const WINDOW_CLOSE_TO_TRAY: &str = "window.close_to_tray";
     pub const NOTIFICATION_ON_REPLY_COMPLETE: &str = "notification.on_reply_complete";
     pub const SHORTCUT_TOGGLE_WINDOW: &str = "shortcut.toggle_window";
+    pub const FILE_ACCESS_DIRECTORY: &str = "file_access.directory";
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +214,72 @@ impl Default for ShortcutSettings {
     }
 }
 
+/// 本地文件访问的授权范围（非敏感，进 settings 表）
+///
+/// 存的是**已经过校验的绝对路径**。授权范围只允许一个目录 ——
+/// 多目录要配一套管理界面，而 MVP 的需求是「让我读某个文件夹里的东西」，
+/// 一个根目录 + 相对路径已经能表达清楚，而且路径检查只有一个基准点，更不容易写错。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAccessSettings {
+    /// 已授权的目录，空串表示没有授权
+    pub directory: String,
+}
+
+impl Default for FileAccessSettings {
+    fn default() -> Self {
+        Self {
+            directory: DEFAULT_FILE_DIRECTORY.to_string(),
+        }
+    }
+}
+
+/// 文件访问的当前状态
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileAccessStatus {
+    /// 已授权的目录，空串表示没授权
+    pub directory: String,
+    /// 这个目录现在还能不能打开。
+    /// 授权之后目录可能被删掉或改名，那时候要如实显示为不可用，
+    /// 而不是等到用户点开文件才报一个看不懂的错。
+    pub available: bool,
+}
+
+/// 目录里的一项
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileEntry {
+    /// 相对授权目录的路径 —— 前端拿这个值来请求读取
+    pub relative_path: String,
+    pub name: String,
+    pub is_directory: bool,
+    /// 目录的 size 恒为 0（Windows 上目录大小本来也不是一个标量）
+    pub size: u64,
+}
+
+/// 一个文件的内容
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContent {
+    pub relative_path: String,
+    pub content: String,
+    /// 文件在磁盘上的真实大小（不是返回内容的长度）
+    pub bytes: u64,
+    /// 是否因为超过上限被截断
+    pub truncated: bool,
+}
+
+/// 一次读取记录。**只存在内存里**，不落盘 —— 见 file_access.rs 的说明。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentRead {
+    pub relative_path: String,
+    pub bytes: u64,
+    /// 毫秒时间戳
+    pub at: u64,
+}
+
 /// 全局快捷键的当前状态。
 ///
 /// `accelerator` 是用户设置的值，`registered` 是**运行期的事实** ——
@@ -227,6 +301,7 @@ pub struct AppSettings {
     pub window: WindowSettings,
     pub notification: NotificationSettings,
     pub shortcut: ShortcutSettings,
+    pub file_access: FileAccessSettings,
 }
 
 impl Default for AppSettings {
@@ -244,6 +319,7 @@ impl Default for AppSettings {
             window: WindowSettings::default(),
             notification: NotificationSettings::default(),
             shortcut: ShortcutSettings::default(),
+            file_access: FileAccessSettings::default(),
         }
     }
 }

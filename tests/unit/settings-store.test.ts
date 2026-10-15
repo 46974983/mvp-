@@ -4,6 +4,7 @@ import {
   createBrowserStorage,
   DEFAULT_CLOSE_TO_TRAY,
   DEFAULT_PERSONA,
+  DEFAULT_FILE_DIRECTORY,
   DEFAULT_GLOBAL_SHORTCUT,
   DEFAULT_NOTIFY_ON_REPLY_COMPLETE,
 } from '@/services/storage';
@@ -584,5 +585,191 @@ describe('全局快捷键', () => {
     expect(store.getState().globalShortcut).toBe(DEFAULT_GLOBAL_SHORTCUT);
     expect(store.getState().globalShortcutRegistered).toBe(false);
     expect(store.getState().settings.shortcut.toggleWindow).toBe(DEFAULT_GLOBAL_SHORTCUT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 本地文件（阶段 D）
+// ---------------------------------------------------------------------------
+
+/** 造一个「声称能读本地文件」的平台，带一个内存文件树 */
+function createFilePlatform(
+  tree: Record<string, string> = { 'a.txt': '内容' },
+  options: { failAuthorize?: boolean } = {}
+) {
+  const base = createBrowserPlatformService();
+  const reads: string[] = [];
+  let directory = '';
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-file',
+    probeCapabilities: async () => new Set<PlatformCapability>(['file-read']),
+    fileAccessStatus: async () => ({ directory, available: directory.length > 0 }),
+    pickDirectory: async () => 'D:/笔记',
+    authorizeDirectory: async (path: string) => {
+      if (options.failAuthorize) {
+        return { ok: false, message: '这个路径不是一个目录。' };
+      }
+      directory = path;
+      return { ok: true, message: `已授权读取 ${path}。` };
+    },
+    revokeDirectory: async () => {
+      directory = '';
+      return { ok: true, message: '已撤销文件读取授权。' };
+    },
+    listAuthorizedDirectory: async (relativeDir: string) =>
+      Object.keys(tree)
+        .filter((key) => key.startsWith(relativeDir))
+        .map((key) => ({
+          relativePath: key,
+          name: key.split('/').pop() ?? key,
+          isDirectory: false,
+          size: (tree[key] ?? '').length,
+        })),
+    readFile: async (relativePath: string) => {
+      const content = tree[relativePath];
+      if (content === undefined) throw new Error('读不到这个文件：系统找不到指定的文件。');
+      reads.push(relativePath);
+      return {
+        relativePath,
+        content,
+        bytes: content.length,
+        truncated: false,
+      };
+    },
+    recentFileReads: async () => reads.map((path, index) => ({ relativePath: path, bytes: 2, at: index })),
+  };
+
+  return {
+    platform,
+    reads,
+    current: () => directory,
+    /** 模拟「重置时授权一并清掉」（真实环境由 Rust 侧的 reset_all_data 做） */
+    forget: () => {
+      directory = '';
+      reads.length = 0;
+    },
+  };
+}
+
+describe('本地文件访问', () => {
+  it('默认没有授权任何目录 —— 阶段 D 的能力默认关闭', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    expect(store.getState().fileAccessDirectory).toBe('');
+    expect(store.getState().fileAccessAvailable).toBe(false);
+    expect(store.getState().recentReads).toEqual([]);
+    expect(DEFAULT_FILE_DIRECTORY).toBe('');
+  });
+
+  it('浏览器模式探测不到这个能力', async () => {
+    const { store } = setup();
+    await store.getState().load();
+    expect(store.getState().platformCapabilities).not.toContain('file-read');
+  });
+
+  it('授权成功后界面才反映新范围', async () => {
+    const { platform, current } = createFilePlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    const result = await store.getState().authorizeDirectory('D:/笔记');
+
+    expect(result.ok).toBe(true);
+    expect(current()).toBe('D:/笔记');
+    expect(store.getState().fileAccessDirectory).toBe('D:/笔记');
+    expect(store.getState().fileAccessAvailable).toBe(true);
+  });
+
+  it('授权失败时界面不改 —— 库里没存，界面就不能显示成已授权', async () => {
+    const { platform, current } = createFilePlatform({}, { failAuthorize: true });
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    const result = await store.getState().authorizeDirectory('D:/不存在');
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('不是一个目录');
+    expect(current()).toBe('');
+    expect(store.getState().fileAccessDirectory).toBe('');
+  });
+
+  it('撤销之后范围清空、读取记录也清掉', async () => {
+    const { platform, current } = createFilePlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().authorizeDirectory('D:/笔记');
+    await store.getState().readFile('a.txt');
+    expect(store.getState().recentReads.length).toBeGreaterThan(0);
+
+    const result = await store.getState().revokeDirectory();
+
+    expect(result.ok).toBe(true);
+    expect(current()).toBe('');
+    expect(store.getState().fileAccessDirectory).toBe('');
+    expect(store.getState().fileAccessAvailable).toBe(false);
+    expect(store.getState().recentReads).toEqual([]);
+  });
+
+  it('读文件成功后刷新「最近读取」，让用户能回头看它读了什么', async () => {
+    const { platform, reads } = createFilePlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().authorizeDirectory('D:/笔记');
+
+    const content = await store.getState().readFile('a.txt');
+
+    expect(content.content).toBe('内容');
+    expect(reads).toEqual(['a.txt']);
+    expect(store.getState().recentReads[0]?.relativePath).toBe('a.txt');
+  });
+
+  it('读文件失败会抛出可展示的一句话，而不是吞掉', async () => {
+    const { platform } = createFilePlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().authorizeDirectory('D:/笔记');
+
+    await expect(store.getState().readFile('没有这个.txt')).rejects.toThrow('读不到这个文件');
+    // 失败的尝试不该进「最近读取」，否则那个列表会变得很嘈杂
+    expect(store.getState().recentReads).toEqual([]);
+  });
+
+  it('环境不支持时授权返回失败说明而不是抛错', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    const result = await store.getState().authorizeDirectory('D:/笔记');
+
+    expect(result.ok).toBe(false);
+    expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it('重置本地数据会清掉授权范围，之后读不到任何文件', async () => {
+    const { platform, forget } = createFilePlatform();
+    const base = createBrowserStorage(createMemoryStorage());
+
+    // 真实环境里 reset_all_data 会把授权目录从库里删掉，之后 file_access_status 返回空。
+    // 不模拟这一步的话，这条用例测的只是「前端会不会自己清」——
+    // 而真正要保证的是「重置之后读不到任何东西」。
+    const storage: StorageService = {
+      ...base,
+      reset: async () => {
+        await base.reset();
+        forget();
+      },
+    };
+
+    const { store } = setup(platform, storage);
+    await store.getState().load();
+    await store.getState().authorizeDirectory('D:/笔记');
+
+    await store.getState().resetAll();
+
+    expect(store.getState().fileAccessDirectory).toBe(DEFAULT_FILE_DIRECTORY);
+    expect(store.getState().fileAccessAvailable).toBe(false);
+    expect(store.getState().recentReads).toEqual([]);
   });
 });

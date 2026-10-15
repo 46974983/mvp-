@@ -4,6 +4,7 @@ export type {
   ChatTurn,
   Conversation,
   CredentialStorageInfo,
+  FileAccessSettings,
   Message,
   MessageRole,
   MessageStatus,
