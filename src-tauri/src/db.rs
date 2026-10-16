@@ -18,14 +18,17 @@ use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    AppSettings, AppendMessageInput, Conversation, CreateConversationInput,
+    AppSettings, AppendMessageInput, ChatAttachment, Conversation, CreateConversationInput,
     DEFAULT_CONVERSATION_TITLE, FileAccessSettings, Message, MessagePatch, NotificationSettings,
     PermissionSettings, PersistedModelConfig, PersonaConfig, ShortcutSettings, StorageLocation,
     WindowSettings, derive_title_from_message, normalize_title,
 };
 
 /// 迁移脚本按版本号排列，只增不改：已经跑过的版本在用户机器上不会再跑一次。
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_init.sql")),
+    (2, include_str!("../migrations/0002_attachments.sql")),
+];
 
 /// 当前时间戳（毫秒）
 pub fn now_ms() -> i64 {
@@ -263,7 +266,7 @@ impl Database {
     pub fn list_messages(&self, conversation_id: &str) -> AppResult<Vec<Message>> {
         self.with_conn(|conn| {
             let mut statement = conn.prepare(
-                "SELECT id, conversation_id, role, content, status, created_at
+                "SELECT id, conversation_id, role, content, status, created_at, attachments
                  FROM messages WHERE conversation_id = ?1
                  ORDER BY created_at ASC, rowid ASC",
             )?;
@@ -286,6 +289,19 @@ impl Database {
             content: input.content.clone(),
             status: input.status.unwrap_or_else(|| "complete".to_string()),
             created_at: now,
+            attachments: input.attachments.clone(),
+        };
+
+        // 先序列化再进事务：出错时给一句能看懂的话，而不是把它埋在 SQL 调用的参数里
+        let attachments_json = serde_json::to_string(&message.attachments)
+            .map_err(|error| AppError::Invalid(format!("附件无法保存：{error}")))?;
+
+        // 只发了附件没写字的消息，标题就从附件名来 ——
+        // 否则会话列表里会出现一排「新会话」，分不清哪个是哪个
+        let title_source = if input.content.trim().is_empty() {
+            attachment_title(&message.attachments)
+        } else {
+            input.content.clone()
         };
 
         self.with_conn(|conn| {
@@ -304,15 +320,16 @@ impl Database {
             };
 
             transaction.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, status, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO messages (id, conversation_id, role, content, status, created_at, attachments)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     message.id,
                     message.conversation_id,
                     message.role,
                     message.content,
                     message.status,
-                    message.created_at
+                    message.created_at,
+                    attachments_json
                 ],
             )?;
 
@@ -321,7 +338,7 @@ impl Database {
                     "UPDATE conversations SET title = ?2, updated_at = ?3 WHERE id = ?1",
                     params![
                         input.conversation_id,
-                        derive_title_from_message(&input.content),
+                        derive_title_from_message(&title_source),
                         now
                     ],
                 )?;
@@ -392,7 +409,7 @@ impl Database {
         self.with_conn(|conn| {
             Ok(conn
                 .query_row(
-                    "SELECT id, conversation_id, role, content, status, created_at
+                    "SELECT id, conversation_id, role, content, status, created_at, attachments
                      FROM messages WHERE id = ?1",
                     params![id],
                     map_message,
@@ -436,6 +453,11 @@ impl Database {
                     .unwrap_or(defaults.model.api_url),
                 model_name: lookup(crate::models::setting_keys::MODEL_NAME)
                     .unwrap_or(defaults.model.model_name),
+                // 只认明确的 "true"：值坏了、键没了，一律回到默认的「不支持」。
+                // 猜错的代价不对称 —— 见 PersistedModelConfig 的字段说明。
+                supports_vision: lookup(crate::models::setting_keys::MODEL_SUPPORTS_VISION)
+                    .map(|value| value.trim().eq_ignore_ascii_case("true"))
+                    .unwrap_or(defaults.model.supports_vision),
             },
             window: WindowSettings {
                 close_to_tray: lookup(crate::models::setting_keys::WINDOW_CLOSE_TO_TRAY)
@@ -596,6 +618,25 @@ fn map_conversation(row: &Row<'_>) -> rusqlite::Result<Conversation> {
     })
 }
 
+/// 用附件名凑一个标题，给「只发了附件没写字」的消息用。
+fn attachment_title(attachments: &[ChatAttachment]) -> String {
+    match attachments.first() {
+        Some(ChatAttachment::File { name, .. }) => format!("关于「{name}」"),
+        Some(ChatAttachment::Screenshot { .. }) => "关于一张截图".to_string(),
+        None => String::new(),
+    }
+}
+
+/// 读附件列。
+///
+/// **解析失败时返回空数组，而不是报错。** 这一列是我们自己写的 JSON，
+/// 理论上不会坏；但万一真坏了（手工改过库、版本回退），
+/// 一条消息的附件读不出来不该让整个会话打不开 —— 丢掉附件、把文字显示出来，
+/// 用户至少还用得了。
+fn parse_attachments(raw: String) -> Vec<ChatAttachment> {
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
 fn map_message(row: &Row<'_>) -> rusqlite::Result<Message> {
     Ok(Message {
         id: row.get(0)?,
@@ -604,6 +645,7 @@ fn map_message(row: &Row<'_>) -> rusqlite::Result<Message> {
         content: row.get(3)?,
         status: row.get(4)?,
         created_at: row.get(5)?,
+        attachments: parse_attachments(row.get::<_, String>(6)?),
     })
 }
 
@@ -626,18 +668,47 @@ mod tests {
             role: "user".to_string(),
             content: content.to_string(),
             status: None,
+            attachments: Vec::new(),
         }
+    }
+
+    /// 最新的迁移版本号。
+    ///
+    /// 断言写成「等于最新版本」而不是写死数字：这两条用例要证明的是
+    /// **迁移都跑到了、重复跑也安全**，不是「当前是第几版」。
+    /// 写死数字的话，每加一个迁移都要来改测试，而那两件事都没被多测到。
+    fn latest_version() -> i64 {
+        MIGRATIONS.last().map(|(version, _)| *version).unwrap_or(0)
     }
 
     #[test]
     fn migration_runs_once_and_is_idempotent() {
         let database = database();
-        assert_eq!(database.applied_version().unwrap(), 1);
+        assert_eq!(database.applied_version().unwrap(), latest_version());
 
         // 再跑一次不应该报错，也不应该重复插入记录
         database.migrate().unwrap();
         database.migrate().unwrap();
-        assert_eq!(database.applied_version().unwrap(), 1);
+        assert_eq!(database.applied_version().unwrap(), latest_version());
+    }
+
+    #[test]
+    fn messages_can_carry_attachments() {
+        // 0002 加的列，这里直接问表结构 —— 只测「能不能写」的话，
+        // 列被别的迁移改名了也发现不了
+        let database = database();
+        let columns: Vec<String> = database
+            .with_conn(|conn| {
+                let mut statement = conn.prepare("PRAGMA table_info(messages)")?;
+                let rows = statement.query_map([], |row| row.get(1))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+
+        assert!(
+            columns.iter().any(|name| name == "attachments"),
+            "messages 表应当有 attachments 列，实际有：{columns:?}"
+        );
     }
 
     #[test]
@@ -769,6 +840,7 @@ mod tests {
                 role: "assistant".into(),
                 content: "你好呀".into(),
                 status: Some("streaming".into()),
+                attachments: Vec::new(),
             })
             .unwrap();
 
@@ -797,6 +869,7 @@ mod tests {
                 conversation_id: conversation.id,
                 role: "system".into(),
                 content: "不该写进来".into(),
+                attachments: Vec::new(),
                 status: None,
             })
             .unwrap_err();
@@ -814,6 +887,7 @@ mod tests {
                 role: "assistant".into(),
                 content: String::new(),
                 status: Some("streaming".into()),
+                attachments: Vec::new(),
             })
             .unwrap();
 
@@ -885,6 +959,7 @@ mod tests {
             .save_model_projection(&PersistedModelConfig {
                 api_url: "https://api.example.com/v1".into(),
                 model_name: "gpt-4o-mini".into(),
+                supports_vision: false,
             })
             .unwrap();
 
@@ -1193,6 +1268,7 @@ mod tests {
             .save_model_projection(&PersistedModelConfig {
                 api_url: "https://api.example.com/v1".into(),
                 model_name: "gpt-4o-mini".into(),
+                supports_vision: false,
             })
             .unwrap();
 
@@ -1232,6 +1308,111 @@ mod tests {
 
         assert!(database.list_conversations().unwrap().is_empty());
         assert_eq!(database.get_settings().unwrap(), AppSettings::default());
-        assert_eq!(database.applied_version().unwrap(), 1);
+        // 重置只清业务数据，表结构和迁移记录要保留
+        assert_eq!(database.applied_version().unwrap(), latest_version());
+    }
+
+    #[test]
+    fn attachments_round_trip_through_the_database() {
+        // 附件必须能原样读回来。多轮对话每次都把整段历史重发给模型，
+        // 历史里的图片丢了的话，第二轮开始模型就看不到它了。
+        let database = database();
+        let conversation = database.create_conversation(Default::default()).unwrap();
+
+        database
+            .append_message(AppendMessageInput {
+                conversation_id: conversation.id.clone(),
+                role: "user".into(),
+                content: "看看这个".into(),
+                status: None,
+                attachments: vec![
+                    ChatAttachment::File {
+                        name: "笔记.md".into(),
+                        relative_path: "子目录/笔记.md".into(),
+                        content: "# 标题".into(),
+                        bytes: 9,
+                        truncated: false,
+                    },
+                    ChatAttachment::Screenshot {
+                        name: "屏幕截图".into(),
+                        data_url: "data:image/png;base64,AAAA".into(),
+                        width: 2560,
+                        height: 1440,
+                        bytes: 1024,
+                    },
+                ],
+            })
+            .unwrap();
+
+        let messages = database.list_messages(&conversation.id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].attachments.len(), 2);
+        assert_eq!(
+            messages[0].attachments[0],
+            ChatAttachment::File {
+                name: "笔记.md".into(),
+                relative_path: "子目录/笔记.md".into(),
+                content: "# 标题".into(),
+                bytes: 9,
+                truncated: false,
+            }
+        );
+        assert!(messages[0].attachments[1].is_screenshot());
+    }
+
+    #[test]
+    fn a_message_with_only_an_attachment_still_titles_the_conversation() {
+        // 只发附件不写字的消息，标题不能是空的新会话 —— 那样列表里会分不清
+        let database = database();
+        let conversation = database.create_conversation(Default::default()).unwrap();
+
+        database
+            .append_message(AppendMessageInput {
+                conversation_id: conversation.id.clone(),
+                role: "user".into(),
+                content: String::new(),
+                status: None,
+                attachments: vec![ChatAttachment::File {
+                    name: "周报.md".into(),
+                    relative_path: "周报.md".into(),
+                    content: "内容".into(),
+                    bytes: 6,
+                    truncated: false,
+                }],
+            })
+            .unwrap();
+
+        let updated = database
+            .get_conversation(&conversation.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            updated.title.contains("周报.md"),
+            "标题应当来自附件名，实际是：{}",
+            updated.title
+        );
+    }
+
+    #[test]
+    fn a_broken_attachments_value_does_not_break_the_conversation() {
+        // 这一列万一坏了（手工改过库、版本回退），
+        // 丢掉附件、把文字显示出来，总好过整个会话打不开
+        let database = database();
+        let conversation = database.create_conversation(Default::default()).unwrap();
+        database
+            .append_message(user_message(&conversation.id, "还在的消息"))
+            .unwrap();
+
+        let sql = "UPDATE messages SET attachments = '不是 JSON'";
+        database
+            .with_conn(|conn| {
+                conn.execute(sql, [])?;
+                Ok(())
+            })
+            .unwrap();
+
+        let messages = database.list_messages(&conversation.id).unwrap();
+        assert_eq!(messages[0].content, "还在的消息");
+        assert!(messages[0].attachments.is_empty());
     }
 }

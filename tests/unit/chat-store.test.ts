@@ -549,3 +549,132 @@ describe('回复完成后的通知', () => {
     expect(conversations.getState().messages[1]?.status).toBe('complete');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 附件（阶段 D）
+// ---------------------------------------------------------------------------
+
+function fileAttachment(name: string, content: string) {
+  return {
+    kind: 'file' as const,
+    name,
+    relativePath: name,
+    content,
+    bytes: content.length,
+    truncated: false,
+  };
+}
+
+function screenshotAttachment() {
+  return {
+    kind: 'screenshot' as const,
+    name: '屏幕截图',
+    dataUrl: 'data:image/png;base64,AAAA',
+    width: 2560,
+    height: 1440,
+    bytes: 1024,
+  };
+}
+
+describe('把附件发进对话', () => {
+  it('附件在发送前只留在内存里，不会先进数据库', async () => {
+    const { chat, conversations } = await setup();
+    chat.getState().attach(fileAttachment('笔记.md', '# 标题'));
+
+    expect(chat.getState().pendingAttachments).toHaveLength(1);
+    // 还没点发送 —— 挑了几个文件又反悔的话，库里不该留下任何痕迹
+    expect(conversations.getState().messages).toHaveLength(0);
+  });
+
+  it('可以移除和清空', async () => {
+    const { chat } = await setup();
+    chat.getState().attach(fileAttachment('a.txt', 'a'));
+    chat.getState().attach(fileAttachment('b.txt', 'b'));
+
+    chat.getState().detach(0);
+    expect(chat.getState().pendingAttachments.map((item) => item.name)).toEqual(['b.txt']);
+
+    chat.getState().clearAttachments();
+    expect(chat.getState().pendingAttachments).toHaveLength(0);
+  });
+
+  it('发送后附件跟着用户消息落库，待发送列表清空', async () => {
+    const { chat, conversations } = await setup();
+    chat.getState().attach(fileAttachment('笔记.md', '# 标题'));
+
+    await chat.getState().send('看看这个文件');
+
+    const userMessage = conversations.getState().messages.find((m) => m.role === 'user');
+    expect(userMessage?.content).toBe('看看这个文件');
+    expect(userMessage?.attachments).toHaveLength(1);
+    expect(userMessage?.attachments[0]?.name).toBe('笔记.md');
+    expect(chat.getState().pendingAttachments).toHaveLength(0);
+  });
+
+  it('只挂附件不写字也能发出去', async () => {
+    // 单看 text 会把这种情况吞掉：用户拖进一个文件、什么都没打就按了发送
+    const provider = createCapturingProvider('收到。');
+    const { chat, conversations } = await setup(provider);
+    chat.getState().attach(screenshotAttachment());
+
+    await chat.getState().send('');
+
+    expect(conversations.getState().messages[0]?.attachments).toHaveLength(1);
+    expect(provider.captures).toHaveLength(1);
+  });
+
+  it('第二轮请求仍然带着上一轮的截图 —— 否则模型就「忘了」那张图', async () => {
+    // 这是把附件内容存进消息的真正原因：每轮都要重发整段历史，
+    // 历史里的图片只剩引用的话，第二轮的请求里就没有它了。
+    const provider = createCapturingProvider('看到了。');
+    const { chat } = await setup(provider);
+
+    chat.getState().attach(screenshotAttachment());
+    await chat.getState().send('这张图什么意思');
+    await chat.getState().send('那再解释一下');
+
+    expect(provider.captures).toHaveLength(2);
+    const secondTurn = provider.captures[1]?.messages ?? [];
+    const withImage = secondTurn.filter((turn) =>
+      (turn.attachments ?? []).some((item) => item.kind === 'screenshot')
+    );
+    expect(withImage).toHaveLength(1);
+    expect(withImage[0]?.content).toBe('这张图什么意思');
+  });
+
+  it('只发附件没写字的那一轮，也要进第二轮的历史', async () => {
+    const provider = createCapturingProvider('收到。');
+    const { chat } = await setup(provider);
+
+    chat.getState().attach(fileAttachment('周报.md', '本周没什么事'));
+    await chat.getState().send('');
+    await chat.getState().send('帮我总结一下');
+
+    const secondTurn = provider.captures[1]?.messages ?? [];
+    const withFile = secondTurn.filter((turn) =>
+      (turn.attachments ?? []).some((item) => item.kind === 'file')
+    );
+    // 内容为空但带附件的消息如果被历史过滤掉，模型在第二轮就看不到那个文件了
+    expect(withFile).toHaveLength(1);
+  });
+
+  it('没有附件的消息不带 attachments 字段', async () => {
+    // 不带的才走「content 是字符串」的老格式，改动面才最小
+    const provider = createCapturingProvider('好。');
+    const { chat } = await setup(provider);
+
+    await chat.getState().send('普通消息');
+
+    expect(provider.captures[0]?.messages[0]?.attachments).toBeUndefined();
+  });
+
+  it('发送失败时待发送列表不会被清空两次', async () => {
+    const { chat } = await setup();
+    chat.getState().attach(fileAttachment('a.txt', 'a'));
+    await chat.getState().send('看看');
+
+    // 第二次发送时列表本来就是空的，不该抛错也不该复活
+    await chat.getState().send('再看一次');
+    expect(chat.getState().pendingAttachments).toHaveLength(0);
+  });
+});

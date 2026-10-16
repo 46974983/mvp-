@@ -46,6 +46,9 @@ const USER_AGENT: &str = "desktop-ai-assistant/0.3";
 pub struct ChatTurn {
     pub role: String,
     pub content: String,
+    /// 这一轮带的附件。不带这个字段的老调用方也合法。
+    #[serde(default)]
+    pub attachments: Vec<crate::models::ChatAttachment>,
 }
 
 /// 一次对话请求。
@@ -176,6 +179,86 @@ pub fn endpoint(base: &str, path: &str) -> AppResult<String> {
     Ok(url.to_string())
 }
 
+/// 组装一条消息的 `content`。
+///
+/// 没有附件时返回**字符串** —— 和加附件能力之前完全一样。
+/// 这样改动的面最小：绝大多数请求走的还是这条路径，原有测试也继续有意义。
+///
+/// 有附件时才变成数组（OpenAI 的多模态格式）：
+///   - 文件本来就是文本，拼进同一个 text part 即可，任何模型都能收；
+///   - 截图是图片，单独一个 `image_url` part，只有支持视觉的模型收得下。
+///
+/// ## 顺序：附件在前，用户的话在后
+///
+/// 长文件接在问题后面的话，模型读完问题还要再啃一大段内容才轮到回答；
+/// 把附件放在前面、用户的话放在最后，模型最后读到的是那个问题。
+/// 这是刻意的选择，不是随手拼的。
+fn build_content(turn: &ChatTurn) -> serde_json::Value {
+    use crate::models::ChatAttachment;
+
+    if turn.attachments.is_empty() {
+        return serde_json::Value::String(turn.content.clone());
+    }
+
+    let mut parts: Vec<serde_json::Value> = Vec::new();
+    let mut text = String::new();
+
+    for attachment in &turn.attachments {
+        if let ChatAttachment::File {
+            name,
+            relative_path,
+            content,
+            truncated,
+            ..
+        } = attachment
+        {
+            text.push_str(&format!(
+                "--- 附件：{name}（{relative_path}）---\n{content}\n"
+            ));
+            if *truncated {
+                text.push_str("（以上只是这个文件的开头部分，内容较长已被截断）\n");
+            }
+            text.push('\n');
+        }
+    }
+
+    if !turn.content.trim().is_empty() {
+        if text.is_empty() {
+            text = turn.content.clone();
+        } else {
+            text.push_str(&format!("--- 我的问题 ---\n{}", turn.content));
+        }
+    }
+
+    // 空 text part 有些服务端不收，所以只有确实有文字时才放
+    if !text.trim().is_empty() {
+        parts.push(serde_json::json!({ "type": "text", "text": text }));
+    }
+
+    for attachment in &turn.attachments {
+        if let ChatAttachment::Screenshot { data_url, .. } = attachment {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": data_url },
+            }));
+        }
+    }
+
+    serde_json::Value::Array(parts)
+}
+
+/// 请求里有没有图片附件。
+///
+/// 用来在「模型没标记成支持图片」时拦住这次请求 —— 见 `stream_chat` 命令里的门禁。
+pub fn contains_screenshot(request: &ChatRequest) -> bool {
+    use crate::models::ChatAttachment;
+
+    request
+        .messages
+        .iter()
+        .any(|turn| turn.attachments.iter().any(ChatAttachment::is_screenshot))
+}
+
 /// 组装请求体。
 /// system 提示词在这里被放到最前面，作为独立的一条 system 消息；
 /// 用户消息按原顺序跟在后面。
@@ -191,7 +274,7 @@ pub fn build_payload(request: &ChatRequest) -> serde_json::Value {
     for turn in &request.messages {
         messages.push(serde_json::json!({
             "role": turn.role,
-            "content": turn.content,
+            "content": build_content(turn),
         }));
     }
 
@@ -545,24 +628,44 @@ fn apply_sse_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ChatAttachment;
+
+    fn turn(role: &str, content: &str) -> ChatTurn {
+        ChatTurn {
+            role: role.into(),
+            content: content.into(),
+            attachments: Vec::new(),
+        }
+    }
+
+    fn file_attachment(name: &str, content: &str) -> ChatAttachment {
+        ChatAttachment::File {
+            name: name.into(),
+            relative_path: name.into(),
+            content: content.into(),
+            bytes: content.len() as u64,
+            truncated: false,
+        }
+    }
+
+    fn screenshot_attachment() -> ChatAttachment {
+        ChatAttachment::Screenshot {
+            name: "屏幕截图".into(),
+            data_url: "data:image/png;base64,AAAA".into(),
+            width: 2560,
+            height: 1440,
+            bytes: 1024,
+        }
+    }
 
     fn request() -> ChatRequest {
         ChatRequest {
             model: "gpt-4o-mini".into(),
             system_prompt: "你是一个简洁的助手。".into(),
             messages: vec![
-                ChatTurn {
-                    role: "user".into(),
-                    content: "你好".into(),
-                },
-                ChatTurn {
-                    role: "assistant".into(),
-                    content: "你好，有什么可以帮你的？".into(),
-                },
-                ChatTurn {
-                    role: "user".into(),
-                    content: "帮我看看这段代码".into(),
-                },
+                turn("user", "你好"),
+                turn("assistant", "你好，有什么可以帮你的？"),
+                turn("user", "帮我看看这段代码"),
             ],
         }
     }
@@ -762,5 +865,166 @@ mod tests {
 
         let weird = describe_models("not json", "gpt-4o-mini");
         assert!(weird.contains("连接成功"));
+    }
+    fn turn_with(role: &str, content: &str, attachments: Vec<ChatAttachment>) -> ChatTurn {
+        ChatTurn {
+            role: role.into(),
+            content: content.into(),
+            attachments,
+        }
+    }
+
+    #[test]
+    fn a_turn_without_attachments_still_sends_a_plain_string() {
+        // 这条是在保「改动面最小」：绝大多数请求没有附件，
+        // 它们必须继续走和以前完全一样的格式，否则等于把所有请求都动了。
+        let payload = build_payload(&request());
+        let messages = payload["messages"].as_array().unwrap();
+
+        assert_eq!(messages[1]["content"], "你好");
+        assert!(
+            messages[1]["content"].is_string(),
+            "没有附件时 content 应当还是字符串"
+        );
+    }
+
+    #[test]
+    fn a_file_attachment_is_folded_into_the_text_part() {
+        let mut request = request();
+        request.messages = vec![turn_with(
+            "user",
+            "这个文件有什么问题",
+            vec![file_attachment("笔记.md", "# 标题\n正文")],
+        )];
+
+        let payload = build_payload(&request);
+        let content = &payload["messages"][1]["content"];
+
+        assert!(content.is_array(), "带附件时 content 应当变成数组");
+        let parts = content.as_array().unwrap();
+        assert_eq!(parts.len(), 1, "文件是文本，不需要额外的 part");
+        assert_eq!(parts[0]["type"], "text");
+
+        let text = parts[0]["text"].as_str().unwrap();
+        assert!(text.contains("附件"), "要标出这是附件：{text}");
+        assert!(text.contains("笔记.md"), "要带上文件名：{text}");
+        assert!(text.contains("# 标题"), "要有文件内容：{text}");
+        assert!(
+            text.contains("这个文件有什么问题"),
+            "用户的话不能被丢掉：{text}"
+        );
+    }
+
+    #[test]
+    fn the_users_question_comes_after_the_attachment() {
+        let mut request = request();
+        request.messages = vec![turn_with(
+            "user",
+            "这段话什么意思",
+            vec![file_attachment("长文.txt", "很长的一段内容")],
+        )];
+
+        let payload = build_payload(&request);
+        let text = payload["messages"][1]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+
+        // 长文接在问题后面的话，模型读完问题还要再啃一大段才轮到回答。
+        // 把问题放最后，模型最后读到的才是它要回答的东西。
+        let attachment_at = text.find("很长的一段内容").unwrap();
+        let question_at = text.find("这段话什么意思").unwrap();
+        assert!(attachment_at < question_at, "附件应当在问题之前：{text}");
+    }
+
+    #[test]
+    fn a_screenshot_becomes_an_image_url_part() {
+        let mut request = request();
+        request.messages = vec![turn_with(
+            "user",
+            "这个报错什么意思",
+            vec![screenshot_attachment()],
+        )];
+
+        let payload = build_payload(&request);
+        let parts = payload["messages"][1]["content"].as_array().unwrap();
+
+        assert_eq!(parts.len(), 2, "文字一段 + 图片一段");
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AAAA");
+    }
+
+    #[test]
+    fn files_and_screenshots_can_coexist() {
+        let mut request = request();
+        request.messages = vec![turn_with(
+            "user",
+            "帮我看看",
+            vec![
+                file_attachment("日志.txt", "错误信息"),
+                screenshot_attachment(),
+            ],
+        )];
+
+        let payload = build_payload(&request);
+        let parts = payload["messages"][1]["content"].as_array().unwrap();
+
+        assert_eq!(parts.len(), 2, "两个文件 part 会合并成一个 text part");
+        let text = parts[0]["text"].as_str().unwrap();
+        assert!(text.contains("错误信息"), "文件内容在 text part 里：{text}");
+        assert_eq!(parts[1]["type"], "image_url");
+    }
+
+    #[test]
+    fn a_turn_with_only_an_attachment_has_no_empty_text_part() {
+        // 空 text part 有些服务端不收，所以只发图的时候不该带一个空字符串段
+        let mut request = request();
+        request.messages = vec![turn_with("user", "", vec![screenshot_attachment()])];
+
+        let payload = build_payload(&request);
+        let parts = payload["messages"][1]["content"].as_array().unwrap();
+
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "image_url");
+    }
+
+    #[test]
+    fn truncated_files_say_so() {
+        // 截断过却不说，模型会把「开头」当成全文来回答
+        let mut request = request();
+        request.messages = vec![turn_with(
+            "user",
+            "看看",
+            vec![ChatAttachment::File {
+                name: "大日志.txt".into(),
+                relative_path: "大日志.txt".into(),
+                content: "开头".into(),
+                bytes: 999_999,
+                truncated: true,
+            }],
+        )];
+
+        let payload = build_payload(&request);
+        let text = payload["messages"][1]["content"][0]["text"]
+            .as_str()
+            .unwrap();
+
+        assert!(text.contains("截断"), "要说明这是被截断的开头：{text}");
+    }
+
+    #[test]
+    fn detects_screenshots_anywhere_in_the_request() {
+        let mut clean = request();
+        assert!(!contains_screenshot(&clean));
+
+        clean
+            .messages
+            .push(turn_with("user", "", vec![screenshot_attachment()]));
+        assert!(contains_screenshot(&clean));
+
+        // 只有文件时不算 —— 文件是文本，不需要多模态
+        let mut files_only = request();
+        files_only.messages = vec![turn_with("user", "看", vec![file_attachment("a.txt", "x")])];
+        assert!(!contains_screenshot(&files_only));
     }
 }

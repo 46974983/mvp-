@@ -31,6 +31,36 @@ export interface Conversation {
 }
 
 /** 一条消息（对应 messages 表） */
+/**
+ * 一条消息带的一个附件。
+ *
+ * 两种形态差别很大，所以做成联合类型而不是一个结构加个 kind 字段：
+ *   - `file` 是**文本**，拼进 prompt 的文本部分就够，任何模型都能用；
+ *   - `screenshot` 是**图片**，走 OpenAI 的多模态格式，只有支持视觉的模型收得下。
+ *
+ * 类型上分开，调用方就不用「记得图片那个字段是空的」。
+ */
+export type ChatAttachment =
+  | {
+      kind: 'file';
+      /** 展示用的文件名 */
+      name: string;
+      /** 相对授权目录的路径 —— 留个来路，方便对上是哪个文件 */
+      relativePath: string;
+      content: string;
+      bytes: number;
+      /** 是否因为超过上限被截断 */
+      truncated: boolean;
+    }
+  | {
+      kind: 'screenshot';
+      name: string;
+      dataUrl: string;
+      width: number;
+      height: number;
+      bytes: number;
+    };
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -38,6 +68,12 @@ export interface Message {
   content: string;
   status: MessageStatus;
   createdAt: number;
+  /**
+   * 这条消息带的附件。**内容跟着消息一起存**（见 0002_attachments.sql）——
+   * 多轮对话每次都要重发整段历史，历史里的图片只剩引用的话，
+   * 第二轮开始模型就看不到它了。
+   */
+  attachments: ChatAttachment[];
 }
 
 /** 模型连接配置。注意：apiKey 永远不落盘，只活在内存里（见 5. 数据与安全）。 */
@@ -45,6 +81,13 @@ export interface ModelConfig {
   apiUrl: string;
   apiKey: string;
   modelName: string;
+  /**
+   * 这个模型收不收图片输入（多模态）。**默认 false。**
+   *
+   * 猜错方向的代价不对称：标成不支持但实际支持，用户多点一下开关；
+   * 标成支持但实际不支持，就会把一张图发给文本模型，换来一个看不懂的 API 报错。
+   */
+  supportsVision: boolean;
 }
 
 /** 人格配置（属于 settings 表，非敏感，可以持久化） */
@@ -62,6 +105,13 @@ export interface PersonaConfig {
 export interface PersistedModelConfig {
   apiUrl: string;
   modelName: string;
+  /**
+   * 这个模型收不收图片输入（多模态）。
+   *
+   * **默认 false。** 猜错方向的代价不对称：标成不支持、实际支持，用户多点一下开关；
+   * 标成支持、实际不支持，就会把一张图发给文本模型，换来一个看不懂的 API 报错。
+   */
+  supportsVision: boolean;
 }
 
 /**
@@ -180,6 +230,8 @@ export interface StorageLocation {
 export interface ChatTurn {
   role: MessageRole;
   content: string;
+  /** 这一轮带的附件。不带也合法。 */
+  attachments?: ChatAttachment[];
 }
 
 /**

@@ -219,6 +219,7 @@ export function createSettingsStore(services: Services): SettingsStore {
           // 前端永远不持有它（桌面模式下它躺在系统凭据管理器里）
           apiUrl: settings.model.apiUrl,
           modelName: settings.model.modelName,
+          supportsVision: settings.model.supportsVision,
           apiKey: '',
         },
         loaded: true,
@@ -289,7 +290,11 @@ export function createSettingsStore(services: Services): SettingsStore {
         modelConfig,
         settings: {
           ...get().settings,
-          model: { apiUrl: modelConfig.apiUrl, modelName: modelConfig.modelName },
+          model: {
+            apiUrl: modelConfig.apiUrl,
+            modelName: modelConfig.modelName,
+            supportsVision: modelConfig.supportsVision,
+          },
         },
         apiKeyStored,
       });
@@ -576,6 +581,7 @@ export function createSettingsStore(services: Services): SettingsStore {
         modelConfig: {
           apiUrl: persistedSettings.model.apiUrl,
           modelName: persistedSettings.model.modelName,
+          supportsVision: persistedSettings.model.supportsVision,
           apiKey: '',
         },
         apiKeyStored,

@@ -411,3 +411,61 @@ test('流式对话不接收 API Key 参数 —— 凭据由 Rust 自己取', () 
     'stream_chat 不应接收 api_key：它应当从系统凭据存储里读'
   );
 });
+
+test('新增的迁移脚本同样不许出现凭据字段', () => {
+  // 0001 的检查写死了文件名，所以新加的迁移不会被它覆盖到 ——
+  // 这条按目录扫，以后再加迁移也自动生效
+  const directory = path.join(ROOT, 'src-tauri/migrations');
+  const files = fs.readdirSync(directory).filter((name) => name.endsWith('.sql'));
+
+  assert.ok(files.length >= 2, `迁移脚本数量看起来不对：${files.join(', ')}`);
+
+  for (const name of files) {
+    const content = fs
+      .readFileSync(path.join(directory, name), 'utf8')
+      .replace(/--[^\n]*/g, ''); // 去掉注释：注释里为了说明「刻意没有这个列」会提到它
+
+    for (const forbidden of ['api_key', 'apikey', 'token', 'secret', 'password']) {
+      assert.ok(!content.includes(forbidden), `${name} 不应出现 ${forbidden}`);
+    }
+  }
+});
+
+test('附件随消息一起入库，而不是只留一个引用', () => {
+  // 多轮对话每次都要把整段历史重发给模型。历史里的图片只剩引用的话，
+  // 第二轮开始模型就看不到它了 —— 所以附件内容必须跟着消息存下来。
+  const migration = readFile('src-tauri/migrations/0002_attachments.sql');
+  assert.match(
+    migration,
+    /ALTER TABLE messages ADD COLUMN attachments/,
+    '0002 应当给 messages 加上 attachments 列'
+  );
+
+  const models = readRust('src-tauri/src/models.rs');
+  assert.match(models, /pub struct Message \{[\s\S]*?attachments: Vec<ChatAttachment>/, 'Message 要带附件');
+  assert.match(
+    models,
+    /pub enum ChatAttachment \{/,
+    '附件应当是枚举：文件和图片的字段不同，靠类型表达比靠约定可靠'
+  );
+
+  // 写入与读取都要带上这一列，只改一半会静默丢数据
+  const db = readRust('src-tauri/src/db.rs');
+  assert.match(db, /INSERT INTO messages \([^)]*attachments/, '写入要带上 attachments 列');
+  assert.match(db, /SELECT id, conversation_id, role, content, status, created_at, attachments/, '读取要带上 attachments 列');
+});
+
+test('图片附件的门禁在 Rust 侧', () => {
+  // 把图发给只认文本的模型，换回来的是用户看不懂的 API 报错。
+  // 前端也会拦一道，但不能只靠前端 —— 命令是可以被直接调用的。
+  const commands = readRust('src-tauri/src/commands.rs');
+  const stream = /pub async fn stream_chat\([\s\S]*?\n\}/.exec(commands);
+  assert.ok(stream, '找不到 stream_chat');
+
+  assert.match(stream[0], /contains_screenshot\(/, 'stream_chat 应当检查请求里有没有图片');
+  assert.match(
+    stream[0],
+    /supports_vision/,
+    '检查要基于我们库里的模型配置，而不是前端传进来的参数'
+  );
+});

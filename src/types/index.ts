@@ -1,5 +1,6 @@
 export type {
   AppSettings,
+  ChatAttachment,
   ChatRequest,
   ChatTurn,
   Conversation,

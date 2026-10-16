@@ -281,6 +281,7 @@ describe('模型配置与凭据去向', () => {
 
     await storage.settings.saveModelConfig({
       apiUrl: 'https://api.example.com/v1',
+      supportsVision: false,
       apiKey: 'sk-should-not-be-stored-anywhere',
       modelName: 'gpt-4o-mini',
     });
@@ -296,6 +297,7 @@ describe('模型配置与凭据去向', () => {
     const { storage } = setup();
     await storage.settings.saveModelConfig({
       apiUrl: 'https://api.example.com/v1',
+      supportsVision: false,
       apiKey: '',
       modelName: 'my-model',
     });

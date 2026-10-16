@@ -13,7 +13,7 @@
  */
 
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
-import type { ChatRequest, StreamOutcome } from '@/types';
+import type { ChatAttachment, ChatRequest, StreamOutcome } from '@/types';
 import type { Services } from '@/services/container';
 import { createLogger, toUserFacingError } from '@/lib/log';
 import { summarizeForNotification } from '@/lib/text';
@@ -40,8 +40,20 @@ export interface ChatState {
   error: string | null;
   /** 上一次流式调用的收尾状态，界面用它提示「已停止」 */
   lastOutcome: StreamOutcome | null;
+  /**
+   * 已经挂上、但还没发出去的附件。
+   *
+   * 它们在**发送之前**一直留在内存里，只有点了发送才会写进消息。
+   * 这样「挑了几个文件又反悔」不会在数据库里留下任何痕迹。
+   */
+  pendingAttachments: ChatAttachment[];
 
   send(text: string): Promise<void>;
+  /** 挂一个附件到待发送列表 */
+  attach(attachment: ChatAttachment): void;
+  /** 按下标移除待发送的附件 */
+  detach(index: number): void;
+  clearAttachments(): void;
   stop(): void;
   clearError(): void;
 }
@@ -103,10 +115,29 @@ export function createChatStore(
     streamingText: '',
     error: null,
     lastOutcome: null,
+    pendingAttachments: [],
+
+    attach(attachment) {
+      // 同一种附件重复挂上去没有意义（尤其是截图，同一张挂两次纯属浪费），
+      // 但也不拦着 —— 用户想同时看两个不同文件是完全合理的
+      set({ pendingAttachments: [...get().pendingAttachments, attachment] });
+    },
+
+    detach(index) {
+      set({
+        pendingAttachments: get().pendingAttachments.filter((_, i) => i !== index),
+      });
+    },
+
+    clearAttachments() {
+      set({ pendingAttachments: [] });
+    },
 
     async send(rawText) {
       const text = rawText.trim();
-      if (text.length === 0) return;
+      // 只挂附件、不写字也是合法的一次发送 —— 单看 text 会把这种情况吞掉
+      const attachments = get().pendingAttachments;
+      if (text.length === 0 && attachments.length === 0) return;
       if (conversations.getState().switchingConversation) return;
       if (sendInFlight || get().sending || get().streaming) return;
       // 必须同步占锁，再进入任何 await；这样第二次调用会立刻被忽略。
@@ -120,6 +151,10 @@ export function createChatStore(
         lastOutcome: null,
         streamingMessageId: null,
         streamingText: '',
+        // 附件从「待发送」挪进消息里，这一步之后它们归消息所有。
+        // 在这里就清空，而不是等发送成功 —— 否则用户在网络往返期间
+        // 能看到同一份附件既是待发送、又已经进了消息。
+        pendingAttachments: [],
       });
 
       try {
@@ -136,6 +171,9 @@ export function createChatStore(
           role: 'user',
           content: text,
           status: 'complete',
+          // 附件内容跟着消息一起存：多轮对话要重发整段历史，
+          // 历史里的图片只剩引用的话，第二轮开始模型就看不到它了
+          attachments,
         });
         await conversations.getState().reloadConversations();
         await conversations.getState().reloadActiveMessages();
@@ -178,9 +216,17 @@ export function createChatStore(
         const history = conversations
           .getState()
           .messages.filter(
-            (message) => message.id !== placeholder.id && message.content.trim().length > 0
+            (message) =>
+              message.id !== placeholder.id &&
+              // 只发附件不写字的消息也要进历史 —— 单看 content 会把它整条丢掉，
+              // 于是模型在下一轮就看不到那张图了
+              (message.content.trim().length > 0 || message.attachments.length > 0)
           )
-          .map((message) => ({ role: message.role, content: message.content }));
+          .map((message) => ({
+            role: message.role,
+            content: message.content,
+            attachments: message.attachments.length > 0 ? message.attachments : undefined,
+          }));
 
         const request: ChatRequest = {
           model: modelConfig.modelName,

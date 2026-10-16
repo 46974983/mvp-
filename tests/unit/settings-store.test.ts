@@ -155,6 +155,7 @@ describe('模型配置：非敏感字段落盘，Key 不落盘', () => {
     expect(store.getState().settings.model).toEqual({
       apiUrl: DEFAULT_MODEL_CONFIG.apiUrl,
       modelName: DEFAULT_MODEL_CONFIG.modelName,
+      supportsVision: DEFAULT_MODEL_CONFIG.supportsVision,
     });
   });
 

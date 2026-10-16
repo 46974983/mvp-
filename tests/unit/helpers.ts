@@ -138,6 +138,7 @@ export async function waitFor(
 
 export const VALID_MODEL_CONFIG: ModelConfig = {
   apiUrl: 'https://api.example.com/v1',
+  supportsVision: false,
   apiKey: 'sk-test-1234567890',
   modelName: 'gpt-4o-mini',
 };

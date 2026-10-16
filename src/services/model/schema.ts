@@ -116,6 +116,9 @@ export const modelConfigSchema = z.object({
     (value) => !/\s/.test(value.trim()),
     '模型名称里不应包含空格'
   ),
+  // 纯声明，不校验 —— 我们没法从模型名可靠地判断它支不支持图片，
+  // 所以这一项由用户说了算，默认 false
+  supportsVision: z.boolean(),
 });
 
 /**

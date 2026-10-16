@@ -402,6 +402,17 @@ pub async fn stream_chat(
     };
     let effective = ChatRequest { model, ..request };
 
+    // 图片附件的门禁。这不是安全边界（图片是用户自己挑的），
+    // 但它决定了一次注定失败的请求要不要发出去 ——
+    // 把一张图发给只认文本的模型，换回来的是一个用户看不懂的报错，
+    // 不如在这里拦住并说清楚。
+    if chat::contains_screenshot(&effective) && !settings.model.supports_vision {
+        return Err("这段对话里有截图，但当前模型配置标记为「不支持图片输入」。\
+             如果这个模型其实能看图（比如 gpt-4o、qwen-vl 这类），\
+             请到设置的模型卡片里打开「支持图片输入」；否则请把截图去掉再发送。"
+            .to_string());
+    }
+
     chat::stream_chat(
         &settings.model.api_url,
         &api_key,

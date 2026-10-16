@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { formatClockTime } from '@/lib/time';
 import { renderMarkdown } from '@/lib/markdown';
 import { Button } from '@/components/ui/button';
+import { AttachmentList } from '@/components/chat/AttachmentList';
 
 const STATUS_HINT: Partial<Record<Message['status'], string>> = {
   aborted: '已停止生成',
@@ -64,6 +65,14 @@ export function MessageBubble({
       </div>
 
       <div className={cn('flex min-w-0 max-w-[calc(100%-3rem)] flex-col', isUser && 'items-end')}>
+        {/* 附件放在气泡外面：截图的缩略图放进去会把气泡撑得很难看，
+            而且「这条消息带了什么」和「消息说了什么」本来就是两件事 */}
+        {message.attachments.length > 0 && (
+          <div className="mb-1.5" data-testid="message-attachments">
+            <AttachmentList attachments={message.attachments} />
+          </div>
+        )}
+
         <div
           className={cn(
             'rounded-xl px-3.5 py-2.5 text-[13px] leading-relaxed',

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useForm } from 'react-hook-form';
+import { Controller, useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Eye, EyeOff, KeyRound, Loader2, PlugZap, Save, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { toUserFacingError } from '@/lib/log';
 import {
@@ -68,6 +69,7 @@ export function ModelConfigForm() {
   const {
     register,
     handleSubmit,
+    control,
     getValues,
     trigger,
     reset,
@@ -239,6 +241,29 @@ export function ModelConfigForm() {
             {...register('modelName')}
           />
           <FieldError message={errors.modelName?.message} />
+        </div>
+
+        {/* 能不能看图 —— 这个开关决定了截图附件发不发得出去 */}
+        <div className="flex items-start justify-between gap-4 rounded-lg border border-border bg-muted/50 p-3">
+          <div className="min-w-0">
+            <Label htmlFor="cfg-supports-vision">这个模型支持图片输入</Label>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              打开之后，带截图的对话才会真的发给它。我们没法从模型名可靠地判断这件事，
+              所以由你说了算；填错了也不会出乱子 —— 最多是发送时被拦下并说明原因。
+            </p>
+          </div>
+          <Controller
+            control={control}
+            name="supportsVision"
+            render={({ field }) => (
+              <Switch
+                id="cfg-supports-vision"
+                data-testid="supports-vision"
+                checked={field.value}
+                onCheckedChange={field.onChange}
+              />
+            )}
+          />
         </div>
       </CardContent>
 

@@ -16,6 +16,7 @@
 
 import type {
   AppSettings,
+  ChatAttachment,
   Conversation,
   CredentialStorageInfo,
   Message,
@@ -39,6 +40,8 @@ export interface AppendMessageInput {
   role: MessageRole;
   content: string;
   status?: MessageStatus;
+  /** 附件内容跟着消息一起存，理由见 0002_attachments.sql */
+  attachments?: ChatAttachment[];
 }
 
 /** 更新消息时的可改字段 */

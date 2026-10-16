@@ -24,6 +24,10 @@ pub const DEFAULT_SYSTEM_PROMPT: &str =
 pub const DEFAULT_API_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_MODEL_NAME: &str = "gpt-4o-mini";
 
+/// 「这个模型能看图吗」的默认值：**不能**。理由见 PersistedModelConfig 的字段说明 ——
+/// 猜错方向的代价不对称。
+pub const DEFAULT_SUPPORTS_VISION: bool = false;
+
 /// 「关闭窗口时缩到托盘」的默认值。
 ///
 /// 选 true 是产品判断，不是随手取的：这是个常驻型助手（阶段 C 之后还会有开机自启、
@@ -83,6 +87,7 @@ pub mod setting_keys {
     pub const PERSONA_USER_NAME: &str = "persona.user_name";
     pub const PERSONA_SYSTEM_PROMPT: &str = "persona.system_prompt";
     pub const MODEL_API_URL: &str = "model.api_url";
+    pub const MODEL_SUPPORTS_VISION: &str = "model.supports_vision";
     pub const MODEL_NAME: &str = "model.model_name";
     pub const WINDOW_CLOSE_TO_TRAY: &str = "window.close_to_tray";
     pub const NOTIFICATION_ON_REPLY_COMPLETE: &str = "notification.on_reply_complete";
@@ -111,6 +116,48 @@ pub struct Conversation {
 /// `role` 和 `status` 用字符串而不是枚举：合法取值由数据库的 CHECK 约束兜底，
 /// 这样前端传进来一个没见过的值会被数据库拦住，而不是在反序列化时抛出一个
 /// 用户看不懂的错。
+/// 一条消息带的一个附件。
+///
+/// 两种形态差别很大，所以不是一个结构加个 `kind` 字段：
+///   - `File` 是**文本**，拼进 prompt 的文本部分就够，任何模型都能用；
+///   - `Screenshot` 是**图片**，走 OpenAI 的 `image_url` 多模态格式，
+///     只有支持视觉的模型才收得下。
+///
+/// 做成枚举是为了让「哪些字段对哪种附件有意义」这件事由类型表达，
+/// 而不是靠调用方记得「图片那个字段是空的」。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ChatAttachment {
+    /// 读到的本地文件内容
+    #[serde(rename_all = "camelCase")]
+    File {
+        /// 展示用的文件名
+        name: String,
+        /// 相对授权目录的路径 —— 留个来路，方便用户对上「这是哪个文件」
+        relative_path: String,
+        content: String,
+        bytes: u64,
+        /// 是否因为超过上限被截断
+        truncated: bool,
+    },
+    /// 一张截图。图片数据就在里面，不落盘也没有外部引用。
+    #[serde(rename_all = "camelCase")]
+    Screenshot {
+        name: String,
+        data_url: String,
+        width: u32,
+        height: u32,
+        bytes: u64,
+    },
+}
+
+impl ChatAttachment {
+    /// 是不是图片附件。组装请求时要靠它决定走不走多模态格式。
+    pub fn is_screenshot(&self) -> bool {
+        matches!(self, ChatAttachment::Screenshot { .. })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -120,6 +167,9 @@ pub struct Message {
     pub content: String,
     pub status: String,
     pub created_at: i64,
+    /// 这条消息带的附件。老消息读出来是空数组。
+    #[serde(default)]
+    pub attachments: Vec<ChatAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +188,13 @@ pub struct PersonaConfig {
 pub struct PersistedModelConfig {
     pub api_url: String,
     pub model_name: String,
+    /// 这个模型收不收图片输入（多模态）。
+    ///
+    /// **默认 false。** 猜错方向的代价不对称：标成不支持、实际支持，
+    /// 用户多点一下开关；标成支持、实际不支持，就会把一张图发给文本模型，
+    /// 换来一个看不懂的 API 报错。所以默认选保守的那边。
+    #[serde(default)]
+    pub supports_vision: bool,
 }
 
 /// 窗口与托盘相关的偏好（非敏感，进 settings 表）
@@ -356,6 +413,7 @@ impl Default for AppSettings {
             model: PersistedModelConfig {
                 api_url: DEFAULT_API_URL.to_string(),
                 model_name: DEFAULT_MODEL_NAME.to_string(),
+                supports_vision: DEFAULT_SUPPORTS_VISION,
             },
             window: WindowSettings::default(),
             notification: NotificationSettings::default(),
@@ -375,6 +433,9 @@ pub struct ModelConfig {
     #[serde(default)]
     pub api_key: String,
     pub model_name: String,
+    /// 这个模型收不收图片输入。见 PersistedModelConfig 上的说明。
+    #[serde(default)]
+    pub supports_vision: bool,
 }
 
 impl ModelConfig {
@@ -383,6 +444,7 @@ impl ModelConfig {
         PersistedModelConfig {
             api_url: self.api_url.clone(),
             model_name: self.model_name.clone(),
+            supports_vision: self.supports_vision,
         }
     }
 }
@@ -406,6 +468,9 @@ pub struct AppendMessageInput {
     pub content: String,
     #[serde(default)]
     pub status: Option<String>,
+    /// 附件。**内容跟着消息一起存**，理由见 0002_attachments.sql 的说明。
+    #[serde(default)]
+    pub attachments: Vec<ChatAttachment>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -472,6 +537,7 @@ mod tests {
             api_url: "https://api.example.com/v1".into(),
             api_key: "sk-should-not-be-persisted".into(),
             model_name: "gpt-4o-mini".into(),
+            supports_vision: true,
         };
         let json = serde_json::to_string(&config.projection()).unwrap();
         assert!(!json.contains("sk-should-not-be-persisted"));

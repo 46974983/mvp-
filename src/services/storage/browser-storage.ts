@@ -50,9 +50,18 @@ export const DEFAULT_PERSONA = {
  * 模型配置里默认的非敏感部分。
  * 注意这里是「地址 + 模型名」，不含 Key —— 默认值这一层就不给 Key 留位置。
  */
+/**
+ * 「这个模型能看图吗」的默认值：**不能**。
+ *
+ * 与 Rust 侧 DEFAULT_SUPPORTS_VISION 保持一致 —— 猜错的代价不对称：
+ * 标成支持但实际不支持，会把一张图发给文本模型，换来一个用户看不懂的报错。
+ */
+export const DEFAULT_SUPPORTS_VISION = false;
+
 export const DEFAULT_MODEL_ENDPOINT = {
   apiUrl: 'https://api.openai.com/v1',
   modelName: 'gpt-4o-mini',
+  supportsVision: DEFAULT_SUPPORTS_VISION,
 } as const;
 
 /** 「关闭窗口时缩到托盘」的默认值。与 Rust 侧 DEFAULT_CLOSE_TO_TRAY 保持一致。 */
@@ -254,6 +263,7 @@ export function createBrowserStorage(storage: StorageLike): StorageService {
         content: input.content,
         status: input.status ?? 'complete',
         createdAt: now,
+        attachments: input.attachments ?? [],
       };
       snapshot.messages.push(message);
       conversation.updatedAt = now;
@@ -302,7 +312,11 @@ export function createBrowserStorage(storage: StorageLike): StorageService {
       const snapshot = load();
       snapshot.settings = {
         ...snapshot.settings,
-        model: { apiUrl: config.apiUrl, modelName: config.modelName },
+        model: {
+          apiUrl: config.apiUrl,
+          modelName: config.modelName,
+          supportsVision: config.supportsVision,
+        },
       };
       save(snapshot);
     },

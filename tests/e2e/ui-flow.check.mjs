@@ -354,6 +354,11 @@ try {
     (await page.locator('[data-capability="screenshot"]').getAttribute('data-available')) === 'false'
   );
   check(
+    '模型卡片有「支持图片输入」开关',
+    (await page.locator(testId('supports-vision')).count()) > 0
+  );
+
+  check(
     '不可用时不该出现截屏开关和「抓一张试试」',
     (await page.locator(testId('screenshot-switch')).count()) === 0 &&
       (await page.locator(testId('take-screenshot')).count()) === 0
@@ -404,6 +409,18 @@ try {
   await page.waitForSelector(testId('chat-panel'));
   const avatar = await assistantMessages().first().locator(testId('message-avatar')).innerText();
   check('助手头像跟随人格名称变化', avatar.trim() === '测', `实际：${avatar}`);
+
+  // 附件入口：浏览器里既读不了文件也截不了屏，两个按钮都该是禁用的
+  check(
+    '输入区有附加文件和附加截图两个入口',
+    (await page.locator(testId('attach-file')).count()) === 1 &&
+      (await page.locator(testId('attach-screenshot')).count()) === 1
+  );
+  check(
+    '浏览器模式下附加按钮是禁用的（能力不可用）',
+    (await page.locator(testId('attach-file')).isDisabled()) &&
+      (await page.locator(testId('attach-screenshot')).isDisabled())
+  );
 
   // =========================================================== 8 主题切换
   const themeBefore = await page.evaluate(() => document.documentElement.dataset.theme);
