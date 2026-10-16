@@ -50,6 +50,11 @@ pub struct AppState {
     pub automation_cancel: Arc<std::sync::atomic::AtomicBool>,
     /// 最近一次自动化任务的执行报告，给界面回看用。**只在内存里。**
     pub automation_report: Arc<std::sync::Mutex<Option<crate::automation::AutomationReport>>>,
+    /// 同一时刻只允许一个自动化任务操作系统输入设备。
+    ///
+    /// 前端会把按钮锁住，但命令也可能被直接调用；Rust 侧必须阻止两个
+    /// 任务同时复位同一面取消旗子并竞争鼠标键盘。
+    pub automation_lock: Arc<std::sync::Mutex<()>>,
     /// 改高风险开关时的互斥。
     ///
     /// 两个开关存在同一张表里，而「读出来 → 改一个 → 写回去」不是原子的：
@@ -870,9 +875,11 @@ pub async fn run_automation(
     crate::automation::validate(&actions, display)?;
 
     let cancel = state.automation_cancel.clone();
-    cancel.store(false, Ordering::Relaxed);
+    let automation_lock = state.automation_lock.clone();
 
     let report = blocking_fs(move || {
+        let _guard = crate::automation::try_acquire(&automation_lock)?;
+        cancel.store(false, Ordering::Relaxed);
         crate::automation::run(&actions, &cancel).map_err(|error| error.to_string())
     })
     .await?;

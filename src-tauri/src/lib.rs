@@ -95,6 +95,7 @@ pub fn run() {
                 read_audit: ReadAudit::default(),
                 automation_cancel: Arc::new(AtomicBool::new(false)),
                 automation_report: Arc::new(Mutex::new(None)),
+                automation_lock: Arc::new(Mutex::new(())),
                 permissions_lock: Arc::new(Mutex::new(())),
             });
 

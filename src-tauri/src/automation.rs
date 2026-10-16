@@ -18,6 +18,7 @@
 //! 这比「运行时检测到死循环再拦住」可靠 —— 后者要靠启发式判断，前者根本表达不出来。
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use enigo::{Button, Coordinate, Direction, Enigo, Keyboard, Mouse, Settings};
@@ -50,6 +51,15 @@ const STEP_OVERHEAD_MS: u64 = 50;
 
 /// 等待切片。`wait` 被切成小片检查取消标志，长等待也能及时中断。
 const CANCEL_POLL_MS: u64 = 50;
+
+/// 获取自动化执行锁；失败表示已有任务正在操作系统输入设备。
+///
+/// 使用 try_lock 而不是等待，避免第二个调用看起来像「卡住」，
+/// 也避免它在第一个任务结束后悄悄执行一份用户没有重新确认的动作列表。
+pub fn try_acquire(lock: &Mutex<()>) -> Result<MutexGuard<'_, ()>, String> {
+    lock.try_lock()
+        .map_err(|_| "已有自动化任务正在执行，请等它结束或先停止当前任务。".to_string())
+}
 
 // ---------------------------------------------------------------------------
 // 协议
@@ -432,6 +442,7 @@ pub fn primary_display() -> Result<(u32, u32), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     const DISPLAY: (u32, u32) = (1920, 1080);
 
@@ -657,5 +668,16 @@ mod tests {
     fn a_wait_finishes_when_not_cancelled() {
         let cancel = AtomicBool::new(false);
         assert!(sleep_interruptible(60, &cancel));
+    }
+
+    #[test]
+    fn a_second_automation_run_is_rejected_while_the_lock_is_held() {
+        let lock = Mutex::new(());
+        let _first = try_acquire(&lock).expect("第一个任务应能拿到锁");
+        let second = try_acquire(&lock);
+        assert_eq!(
+            second.unwrap_err(),
+            "已有自动化任务正在执行，请等它结束或先停止当前任务。"
+        );
     }
 }
