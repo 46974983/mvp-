@@ -517,6 +517,14 @@ impl Database {
                 crate::models::setting_keys::MODEL_NAME,
                 model.model_name.trim(),
             ),
+            (
+                crate::models::setting_keys::MODEL_SUPPORTS_VISION,
+                if model.supports_vision {
+                    "true"
+                } else {
+                    "false"
+                },
+            ),
         ])
     }
 
@@ -959,13 +967,14 @@ mod tests {
             .save_model_projection(&PersistedModelConfig {
                 api_url: "https://api.example.com/v1".into(),
                 model_name: "gpt-4o-mini".into(),
-                supports_vision: false,
+                supports_vision: true,
             })
             .unwrap();
 
         let settings = database.get_settings().unwrap();
         assert_eq!(settings.persona.assistant_name, "阿枢");
         assert_eq!(settings.model.api_url, "https://api.example.com/v1");
+        assert!(settings.model.supports_vision);
     }
 
     #[test]
