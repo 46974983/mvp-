@@ -18,6 +18,8 @@ import { invoke } from '@tauri-apps/api/core';
 import type { OperationResult } from '@/types';
 import {
   PLATFORM_CAPABILITIES,
+  type AutomationAction,
+  type AutomationReport,
   type AutostartStatus,
   type FileAccessStatus,
   type FileContent,
@@ -89,6 +91,19 @@ export function createTauriPlatformService(): PlatformService {
 
     // 返回的 data URL 只在内存里，没有文件落盘
     takeScreenshot: () => invoke<Screenshot>('take_screenshot'),
+
+    // ---- 键鼠模拟（阶段 D） ----
+
+    setInputSimulationEnabled: (enabled: boolean) =>
+      invoke<OperationResult>('set_input_simulation_enabled', { enabled }),
+
+    // 收的是一个动作列表，不是「执行任意操作」
+    runAutomation: (actions: AutomationAction[]) =>
+      invoke<AutomationReport>('run_automation', { actions }),
+
+    stopAutomation: () => invoke<void>('stop_automation'),
+
+    automationLastRun: () => invoke<AutomationReport | null>('automation_last_run'),
 
     // ---- 本地文件（阶段 D） ----
     //

@@ -13,6 +13,7 @@
 
 import {
   UnsupportedCapabilityError,
+  type AutomationReport,
   type AutostartStatus,
   type FileAccessStatus,
   type FileEntry,
@@ -119,6 +120,22 @@ export function createBrowserPlatformService(): PlatformService {
 
     async setScreenshotEnabled() {
       unsupported('screenshot');
+    },
+
+    async setInputSimulationEnabled() {
+      unsupported('input-simulation');
+    },
+
+    async runAutomation() {
+      unsupported('input-simulation');
+    },
+
+    async stopAutomation() {
+      unsupported('input-simulation');
+    },
+
+    async automationLastRun(): Promise<AutomationReport | null> {
+      return null;
     },
 
     // ---- 本地文件（阶段 D） ----

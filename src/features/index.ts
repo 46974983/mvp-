@@ -39,6 +39,10 @@ export type {
   FileEntry,
   GlobalShortcutStatus,
   NotificationOutcome,
+  AutomationAction,
+  AutomationReport,
+  AutomationStep,
+  MouseButton,
   RecentRead,
   Screenshot,
 } from '@/services/platform';

@@ -94,6 +94,7 @@ pub mod setting_keys {
     pub const SHORTCUT_TOGGLE_WINDOW: &str = "shortcut.toggle_window";
     pub const FILE_ACCESS_DIRECTORY: &str = "file_access.directory";
     pub const PERMISSION_SCREENSHOT: &str = "permission.screenshot";
+    pub const PERMISSION_INPUT_SIMULATION: &str = "permission.input_simulation";
 }
 
 // ---------------------------------------------------------------------------
@@ -358,12 +359,19 @@ pub struct GlobalShortcutStatus {
 pub struct PermissionSettings {
     /// 手动截屏。开启后可在设置页抓取并预览主屏画面。
     pub screenshot: bool,
+    /// 键鼠模拟。开启后才能执行自动化任务。
+    ///
+    /// **这是全项目权限最重的一项**：前面几项最坏是「看到了不该看的」，
+    /// 这一项能代替用户去操作别的程序 —— 最坏是「在用户没预期的地方点出了后果」。
+    /// 所以它除了开关，还多一层「每次执行前预览 + 确认」。
+    pub input_simulation: bool,
 }
 
 impl Default for PermissionSettings {
     fn default() -> Self {
         Self {
             screenshot: crate::permissions::DEFAULT_HIGH_RISK_ENABLED,
+            input_simulation: crate::permissions::DEFAULT_HIGH_RISK_ENABLED,
         }
     }
 }

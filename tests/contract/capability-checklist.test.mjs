@@ -93,6 +93,21 @@ const CAPABILITY_CHECKLIST = [
     rustModules: ['src-tauri/src/permissions.rs', 'src-tauri/src/screenshot.rs'],
     rustPlugins: [],
   },
+  {
+    id: 'input-simulation',
+    desktopImplemented: true,
+    // 注意这里**没有**「按某个键」「滚一下」这种命令：协议只有四种动作，
+    // 想加新动作必须同时改协议、校验、上限、预览文案和测试
+    desktopCommands: [
+      'platform_capabilities',
+      'set_input_simulation_enabled',
+      'run_automation',
+      'stop_automation',
+      'automation_last_run',
+    ],
+    rustModules: ['src-tauri/src/automation.rs'],
+    rustPlugins: [],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -493,4 +508,119 @@ test('截图不落盘', () => {
 
   // 返回的是 data URL，前端可以直接放进 <img src>
   assert.match(shot, /data:image\/png;base64,/, '应当返回 data URL 而不是文件路径');
+});
+
+// ---------------------------------------------------------------------------
+// 自动化协议（阶段 D 最后一项）
+//
+// 这一项和前面几项的性质不同：前面几项是「读」，最坏是「看到了不该看的」；
+// 这一项是「写」，能代替用户去操作别的程序。所以断言写的是**协议本身的上限**，
+// 而不是某个功能的实现细节。
+// ---------------------------------------------------------------------------
+
+test('动作协议只有四种动作，且没有能表达「重复」的东西', () => {
+  const rust = read('src-tauri/src/automation.rs');
+  const block = /pub enum AutomationAction \{([\s\S]*?)\n\}/.exec(rust);
+  assert.ok(block, '未能找到 AutomationAction');
+
+  // 枚举的变体就是协议的全部。多一个变体就是多一类能被编排出去的操作
+  const variants = [...block[1].matchAll(/^\s{4}([A-Z]\w+)/gm)].map((match) => match[1]);
+  assert.deepEqual(
+    variants.sort(),
+    ['Click', 'Move', 'Type', 'Wait'],
+    `协议变更了：${variants.join(', ')}。加动作要同时改校验、上限、预览文案和测试，`
+      + '并且必须重新想一遍「它能不能被用来表达循环」'
+  );
+
+  // 循环不能在协议里被表达出来 —— 这比「运行时检测到死循环再拦住」可靠得多
+  for (const forbidden of ['Loop', 'Repeat', 'While', 'For', 'Jump', 'Goto']) {
+    assert.ok(
+      !new RegExp(`\\b${forbidden}\\b`).test(block[1]),
+      `协议里不该出现 ${forbidden}：表达不出重复，就不可能写出无限循环`
+    );
+  }
+});
+
+test('协议的各项上限在文档、Rust 和前端三处一致', () => {
+  const doc = read('docs/AUTOMATION_PROTOCOL.md');
+  assert.ok(doc.includes('20'), '协议文档要写明动作数上限');
+
+  const rust = read('src-tauri/src/automation.rs');
+  assert.match(rust, /MAX_ACTIONS: usize = 20/);
+  assert.match(rust, /MAX_WAIT_MS: u64 = 10_000/);
+  assert.match(rust, /MAX_TOTAL_MS: u64 = 60_000/);
+  assert.match(rust, /MAX_TEXT_CHARS: usize = 2000/);
+
+  // 前端也做一遍同样的检查，为的是让用户在点「执行」之前就看到问题。
+  // 两边写歪了的话，前端会拦下一个本来能执行的任务，或者放过去一个必定失败的
+  const component = read('src/components/settings/AutomationSettings.tsx');
+  assert.match(component, /const MAX_ACTIONS = 20;/);
+  assert.match(component, /const MAX_TEXT_CHARS = 2000;/);
+});
+
+test('门禁在 Rust 侧，而且校验发生在动手之前', () => {
+  const run = /pub async fn run_automation\([\s\S]*?\n\}/.exec(rustCommands);
+  assert.ok(run, '找不到 run_automation');
+
+  assert.match(run[0], /ensure_enabled\(/, '执行命令必须先过门禁');
+  assert.match(
+    run[0],
+    /permission\s*\n?\s*\.input_simulation|permission\.input_simulation/,
+    '门禁要读我们库里的开关，不能拿前端传的参数当许可'
+  );
+
+  // 顺序：校验失败时鼠标一次都不该被移动过
+  const validateAt = run[0].indexOf('validate(');
+  const runAt = run[0].indexOf('automation::run(');
+  assert.ok(validateAt >= 0, '执行前必须校验');
+  assert.ok(runAt > validateAt, '校验必须发生在真正动手之前');
+});
+
+test('输入动作之前必须有一个点击动作', () => {
+  // 这是整个协议里最要紧的一条规则：文字走键盘事件，会打到当前有焦点的窗口上。
+  // 允许凭空输入的话，焦点在哪个窗口取决于用户在确认和执行之间有没有切窗口 ——
+  // 而这件事在预览里看不见。
+  const rust = read('src-tauri/src/automation.rs');
+  assert.match(rust, /let mut clicked = false;/, '要记录「前面出现过点击」');
+  assert.match(
+    rust,
+    /if !clicked \{[\s\S]{0,400}?焦点/,
+    '违反时要说清为什么 —— 光说「格式错误」用户不知道该怎么办'
+  );
+
+  // 前端也要提前拦一道，否则用户填完了才被 Rust 拒绝
+  const component = read('src/components/settings/AutomationSettings.tsx');
+  assert.match(component, /if \(!clicked\) return/, '前端也要做同样的检查');
+});
+
+test('自动化日志里不记用户输入的文字内容', () => {
+  // 日志会落到磁盘上长期留着，而用户输入的文字可能包含任何东西 ——
+  // 界面上看一眼和执行之后在文件里留一份，是两件事
+  const rust = read('src-tauri/src/automation.rs');
+  assert.match(rust, /fn log_summary/, '应当有一个专门给日志用的描述');
+  assert.match(
+    rust,
+    /内容不记入日志/,
+    '日志那一行必须明确写出「不记内容」，否则以后有人会顺手把 describe() 接到日志上'
+  );
+});
+
+test('前端拿不到任何系统 API，只有窄命令', () => {
+  // 想加「按某个键」「滚一下」这类能力，必须改协议、加上限、加预览 —— 这是故意的摩擦
+  const platform = read('src/services/platform/types.ts');
+  const service = /export interface PlatformService \{([\s\S]*?)\n\}/.exec(platform);
+  assert.ok(service, '未能找到 PlatformService');
+
+  // 自动化相关的入口就这么几个
+  for (const method of ['runAutomation', 'stopAutomation', 'automationLastRun']) {
+    assert.ok(service[1].includes(method), `PlatformService 应当有 ${method}`);
+  }
+
+  // 不允许出现「直接按某个键」「直接滚动」这种绕过动作协议的入口
+  for (const forbidden of ['pressKey', 'sendKeys', 'scroll', 'keyPress', 'dragMouse']) {
+    assert.ok(
+      !service[1].includes(forbidden),
+      `PlatformService 里不该出现 ${forbidden}：它绕过了动作协议`
+    );
+  }
 });

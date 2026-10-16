@@ -45,6 +45,17 @@ pub struct AppState {
     pub window: WindowRuntime,
     /// 最近的读取记录。**只在内存里**，见 file_access.rs 的说明。
     pub read_audit: ReadAudit,
+    /// 中断自动化任务用。**和 `cancel` 分开**：停聊天不该顺手停掉正在跑的自动化，
+    /// 反过来也一样 —— 两者共用一面旗子的话，一次误触会同时打断两件不相干的事。
+    pub automation_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// 最近一次自动化任务的执行报告，给界面回看用。**只在内存里。**
+    pub automation_report: Arc<std::sync::Mutex<Option<crate::automation::AutomationReport>>>,
+    /// 改高风险开关时的互斥。
+    ///
+    /// 两个开关存在同一张表里，而「读出来 → 改一个 → 写回去」不是原子的：
+    /// 同时改两个开关的话，后写的那个会把先写的那个改回旧值。
+    /// 走 UI 很难撞上，但命令是可以被直接调用的，所以还是锁一下。
+    pub permissions_lock: Arc<std::sync::Mutex<()>>,
 }
 
 /// 把阻塞的数据库操作挪到阻塞线程池，并把 `AppError` 翻成面向用户的字符串
@@ -448,6 +459,11 @@ pub async fn platform_capabilities(state: State<'_, AppState>) -> Result<Vec<Str
         "global-shortcut".to_string(),
         "file-read".to_string(),
         "screenshot".to_string(),
+        // 加新能力时**必须同时改这里**：漏掉的话，桌面端会把已实现的能力
+        // 报成「不支持」，设置页显示成「浏览器里用不了、桌面版可用」，
+        // 而桌面上其实也开不了 —— 用户永远打不开这个功能。
+        // 契约测试按能力清单逐项核对这一份列表。
+        "input-simulation".to_string(),
     ];
 
     // 托盘不一样：图标可能建失败，必须问运行期状态
@@ -752,11 +768,8 @@ pub async fn set_screenshot_enabled(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<OperationResult, String> {
-    let db = state.db.clone();
-    blocking(move || {
-        db.save_permission_settings(&PermissionSettings {
-            screenshot: enabled,
-        })
+    update_permissions(&state, move |permission| {
+        permission.screenshot = enabled;
     })
     .await?;
 
@@ -790,4 +803,132 @@ pub async fn take_screenshot(state: State<'_, AppState>) -> Result<Screenshot, S
     crate::permissions::ensure_enabled(enabled, "截屏")?;
 
     blocking_fs(crate::screenshot::capture).await
+}
+
+// ---------------------------------------------------------------------------
+// 键鼠模拟与自动化任务（阶段 D）
+//
+// 协议与安全边界先写在 docs/AUTOMATION_PROTOCOL.md，这里是落地。
+// 这是全项目权限最重的一项，所以比截屏还多一层：「每次执行前预览 + 确认」。
+// ---------------------------------------------------------------------------
+
+/// 开启 / 关闭键鼠模拟。
+#[tauri::command]
+pub async fn set_input_simulation_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<OperationResult, String> {
+    let next = update_permissions(&state, move |permission| {
+        permission.input_simulation = enabled;
+    })
+    .await?;
+
+    log::info!(
+        "键鼠模拟已{}",
+        if next.input_simulation {
+            "开启"
+        } else {
+            "关闭"
+        }
+    );
+
+    Ok(OperationResult {
+        ok: true,
+        message: if enabled {
+            "已开启键鼠模拟。现在可以执行自动化任务了 —— 每次执行前都会把动作预览给你看，\
+             你点了确认才会真的动鼠标键盘。"
+                .to_string()
+        } else {
+            "已关闭键鼠模拟。现在执行自动化任务会被拒绝。".to_string()
+        },
+    })
+}
+
+/// 执行一个自动化任务。
+///
+/// 顺序是刻意的：**先过门禁、再校验、最后才动手**。
+/// 校验失败时鼠标一次都不该被移动过。
+#[tauri::command]
+pub async fn run_automation(
+    state: State<'_, AppState>,
+    actions: Vec<crate::automation::AutomationAction>,
+) -> Result<crate::automation::AutomationReport, String> {
+    let enabled = blocking({
+        let db = state.db.clone();
+        move || db.get_settings()
+    })
+    .await?
+    .permission
+    .input_simulation;
+
+    // 门在 Rust 侧：界面上把按钮禁掉、或者「记住上次确认过」，
+    // 都不足以拦住一次直接调用
+    crate::permissions::ensure_enabled(enabled, "键鼠模拟")?;
+
+    // 校验是纯函数，先跑一遍；屏幕尺寸单独取，因为它是唯一的外部输入
+    let display = blocking_fs(crate::automation::primary_display).await?;
+    crate::automation::validate(&actions, display)?;
+
+    let cancel = state.automation_cancel.clone();
+    cancel.store(false, Ordering::Relaxed);
+
+    let report = blocking_fs(move || {
+        crate::automation::run(&actions, &cancel).map_err(|error| error.to_string())
+    })
+    .await?;
+
+    if let Ok(mut slot) = state.automation_report.lock() {
+        *slot = Some(report.clone());
+    }
+
+    Ok(report)
+}
+
+/// 中断正在执行的自动化任务。
+#[tauri::command]
+pub fn stop_automation(state: State<'_, AppState>) -> Result<(), String> {
+    state.automation_cancel.store(true, Ordering::Relaxed);
+    log::info!("收到停止自动化任务的请求");
+    Ok(())
+}
+
+/// 最近一次自动化任务的执行报告。**只在内存里，重启就没有了。**
+#[tauri::command]
+pub fn automation_last_run(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::automation::AutomationReport>, String> {
+    Ok(state
+        .automation_report
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone()))
+}
+
+/// 改一个高风险开关。
+///
+/// **读-改-写必须在同一把锁里完成**：两个开关存在同一张表里，
+/// 各读各写的话，同时改两个开关会把其中一个改回旧值。
+/// 走界面很难撞上，但命令可以被直接调用，所以还是锁住。
+async fn update_permissions<F>(
+    state: &State<'_, AppState>,
+    change: F,
+) -> Result<PermissionSettings, String>
+where
+    F: FnOnce(&mut PermissionSettings) + Send + 'static,
+{
+    let db = state.db.clone();
+    let lock = state.permissions_lock.clone();
+
+    blocking(move || {
+        let _guard = lock
+            .lock()
+            .map_err(|_| AppError::Invalid("设置写入锁不可用，请重启应用。".to_string()))?;
+
+        let mut permission = db.get_settings()?.permission;
+        change(&mut permission);
+        db.save_permission_settings(&permission)?;
+
+        Ok(permission)
+    })
+    .await
 }

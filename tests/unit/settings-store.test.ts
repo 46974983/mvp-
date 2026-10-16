@@ -6,6 +6,7 @@ import {
   DEFAULT_PERSONA,
   DEFAULT_FILE_DIRECTORY,
   DEFAULT_GLOBAL_SHORTCUT,
+  DEFAULT_INPUT_SIMULATION_ENABLED,
   DEFAULT_SCREENSHOT_ENABLED,
   DEFAULT_NOTIFY_ON_REPLY_COMPLETE,
 } from '@/services/storage';
@@ -1016,5 +1017,157 @@ describe('截屏能力', () => {
 
     expect(store.getState().screenshotEnabled).toBe(DEFAULT_SCREENSHOT_ENABLED);
     expect(store.getState().lastScreenshot).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 键鼠模拟与自动化（阶段 D）
+// ---------------------------------------------------------------------------
+
+/**
+ * 造一个「声称能模拟键鼠」的平台。
+ *
+ * 关键的两点照着真实 Rust 侧的行为做：
+ *   - **关着开关时它也拒绝**（permissions::ensure_enabled）；
+ *   - 执行期间报告里记下每一步，被中断时如实标记。
+ */
+function createAutomationPlatform() {
+  const base = createBrowserPlatformService();
+  let enabled = false;
+  let runs: unknown[][] = [];
+  let stopRequested = false;
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-automation',
+    probeCapabilities: async () => new Set<PlatformCapability>(['input-simulation']),
+    setInputSimulationEnabled: async (next: boolean) => {
+      enabled = next;
+      return { ok: true, message: next ? '已开启键鼠模拟。' : '已关闭键鼠模拟。' };
+    },
+    stopAutomation: async () => {
+      stopRequested = true;
+    },
+    automationLastRun: async () => null,
+    runAutomation: async (actions) => {
+      if (!enabled) {
+        throw new Error('键鼠模拟还没有开启。这是一个需要你明确同意的能力，请先到设置的对应卡片里打开开关。');
+      }
+      runs.push(actions as unknown[]);
+      const stopped = stopRequested;
+      return {
+        steps: actions.map((_action, index) => ({
+          index,
+          action: `第 ${index + 1} 步`,
+          ok: true,
+          detail: '',
+        })),
+        stopped,
+        timedOut: false,
+        elapsedMs: 120,
+      };
+    },
+  };
+
+  return { platform, runs: () => runs, isEnabled: () => enabled };
+}
+
+describe('键鼠模拟能力', () => {
+  it('默认关闭 —— 全项目权限最重的一项不能默认开着', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    expect(store.getState().inputSimulationEnabled).toBe(false);
+    expect(DEFAULT_INPUT_SIMULATION_ENABLED).toBe(false);
+  });
+
+  it('浏览器模式探测不到这个能力', async () => {
+    const { store } = setup();
+    await store.getState().load();
+    expect(store.getState().platformCapabilities).not.toContain('input-simulation');
+  });
+
+  it('开启之后才能执行', async () => {
+    const { platform, runs } = createAutomationPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    await store.getState().setInputSimulationEnabled(true);
+    const report = await store.getState().runAutomation([{ kind: 'move', x: 10, y: 10 }]);
+
+    expect(runs()).toHaveLength(1);
+    expect(report.steps).toHaveLength(1);
+    expect(store.getState().automationReport?.elapsedMs).toBe(120);
+  });
+
+  it('没开启时执行会被拒绝，并给出可展示的一句话', async () => {
+    const { platform, runs } = createAutomationPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    await expect(
+      store.getState().runAutomation([{ kind: 'move', x: 10, y: 10 }])
+    ).rejects.toThrow('还没有开启');
+    expect(runs()).toHaveLength(0);
+  });
+
+  it('执行期间 running 为真，结束后复位', async () => {
+    const { platform } = createAutomationPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().setInputSimulationEnabled(true);
+
+    const promise = store.getState().runAutomation([{ kind: 'wait', ms: 1 }]);
+    expect(store.getState().automationRunning).toBe(true);
+
+    await promise;
+    expect(store.getState().automationRunning).toBe(false);
+  });
+
+  it('执行失败时 running 也要复位', async () => {
+    // 不复位的话按钮会永远停在「停止」上，用户以为还在跑
+    const { platform } = createAutomationPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+
+    await expect(store.getState().runAutomation([])).rejects.toThrow();
+    expect(store.getState().automationRunning).toBe(false);
+  });
+
+  it('动作列表只活在内存里，不会被存下来', async () => {
+    const { platform } = createAutomationPlatform();
+    const webStorage = createMemoryStorage();
+    const { store } = setup(platform, createBrowserStorage(webStorage));
+    await store.getState().load();
+
+    store.getState().setAutomationDraft([{ kind: 'wait', ms: 100 }]);
+    expect(store.getState().automationDraft).toHaveLength(1);
+
+    // 真正要保证的性质是「不落盘」：一个存下来的动作列表会一直躺在那里，
+    // 而你早就忘了它写了什么 —— 可它执行起来是真的会动鼠标键盘。
+    const persisted = JSON.stringify(webStorage.raw());
+    expect(persisted).not.toContain('"wait"');
+    expect(persisted).not.toContain('automationDraft');
+  });
+
+  it('环境不支持时开启返回失败说明而不是抛错', async () => {
+    const { store } = setup();
+    await store.getState().load();
+
+    const result = await store.getState().setInputSimulationEnabled(true);
+    expect(result.ok).toBe(false);
+    expect(result.message.length).toBeGreaterThan(0);
+  });
+
+  it('重置本地数据会关掉键鼠模拟', async () => {
+    const { platform } = createAutomationPlatform();
+    const { store } = setup(platform);
+    await store.getState().load();
+    await store.getState().setInputSimulationEnabled(true);
+
+    await store.getState().resetAll();
+
+    expect(store.getState().inputSimulationEnabled).toBe(DEFAULT_INPUT_SIMULATION_ENABLED);
+    expect(store.getState().automationReport).toBeNull();
   });
 });

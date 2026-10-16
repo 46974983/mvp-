@@ -347,3 +347,24 @@ describe('截屏', () => {
   // 因为它是 Rust 侧的行为。契约测试断言了 ensure_enabled 必须在命令里，
   // 真正跑起来的行为只能人工在桌面版上验一次。
 });
+
+// ---------------------------------------------------------------------------
+// 键鼠模拟与自动化（阶段 D）
+// ---------------------------------------------------------------------------
+
+describe('自动化', () => {
+  it('动作类方法抛 UnsupportedCapabilityError', async () => {
+    const platform = createBrowserPlatformService();
+
+    await expect(platform.setInputSimulationEnabled(true)).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError
+    );
+    await expect(platform.runAutomation([])).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(platform.stopAutomation()).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+  });
+
+  it('查询类方法返回事实：浏览器里没有执行过任何任务', async () => {
+    const platform = createBrowserPlatformService();
+    expect(await platform.automationLastRun()).toBeNull();
+  });
+});

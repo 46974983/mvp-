@@ -181,6 +181,14 @@ export interface FileAccessSettings {
 export interface PermissionSettings {
   /** 手动截屏。开启后可在设置页抓取并预览主屏画面。 */
   screenshot: boolean;
+  /**
+   * 键鼠模拟。开启后才能执行自动化任务。
+   *
+   * **全项目权限最重的一项**：前面几项最坏是「看到了不该看的」，
+   * 这一项能代替用户去操作别的程序。所以它除了开关，还多一层
+   * 「每次执行前预览 + 确认」。
+   */
+  inputSimulation: boolean;
 }
 
 /** 全部可持久化的应用设置 */

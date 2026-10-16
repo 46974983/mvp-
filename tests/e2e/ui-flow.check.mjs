@@ -358,6 +358,22 @@ try {
     (await page.locator(testId('supports-vision')).count()) > 0
   );
 
+  // 自动化：全项目权限最重的一项，浏览器里必须如实显示为不可用，
+  // 而且不能出现「执行」这种点了会真的动鼠标的按钮
+  check(
+    '浏览器模式如实说明动不了鼠标键盘',
+    await page.locator(testId('automation-unavailable')).isVisible()
+  );
+  check(
+    '能力列表把键鼠模拟标为未开放',
+    (await page.locator('[data-capability="input-simulation"]').getAttribute('data-available')) === 'false'
+  );
+  check(
+    '不可用时不该出现自动化开关和「执行」按钮',
+    (await page.locator(testId('input-simulation-switch')).count()) === 0 &&
+      (await page.locator(testId('run-automation')).count()) === 0
+  );
+
   check(
     '不可用时不该出现截屏开关和「抓一张试试」',
     (await page.locator(testId('screenshot-switch')).count()) === 0 &&

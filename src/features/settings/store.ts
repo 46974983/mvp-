@@ -29,6 +29,8 @@ import type {
 } from '@/types';
 import type { Services } from '@/services/container';
 import type {
+  AutomationAction,
+  AutomationReport,
   FileContent,
   FileEntry,
   NotificationOutcome,
@@ -97,6 +99,24 @@ export interface SettingsState {
   screenshotEnabled: boolean;
   /** 最近一次截屏。**只在内存里**，关掉能力时一并丢弃。 */
   lastScreenshot: Screenshot | null;
+  /**
+   * 键鼠模拟是否开启。**默认关闭。**
+   *
+   * 这是全项目权限最重的一项 —— 前面几项最坏是「看到了不该看的」，
+   * 这一项能代替用户去操作别的程序。
+   */
+  inputSimulationEnabled: boolean;
+  /** 正在执行一个自动化任务 */
+  automationRunning: boolean;
+  /** 最近一次执行的报告。**只在内存里。** */
+  automationReport: AutomationReport | null;
+  /**
+   * 正在编辑的动作列表。**只在内存里，不落盘。**
+   *
+   * 刻意不持久化：一个存下来的动作列表会在你忘了它内容的时候还躺在那儿，
+   * 而这一项执行起来是真的会动鼠标键盘。刷新就没了，是安全的那一侧。
+   */
+  automationDraft: AutomationAction[];
 
   load(): Promise<void>;
   savePersona(persona: PersonaConfig): Promise<OperationResult>;
@@ -132,6 +152,14 @@ export interface SettingsState {
   setScreenshotEnabled(enabled: boolean): Promise<OperationResult>;
   /** 抓一张主屏截图（只在内存里，不落盘）。失败时抛出一句可展示的话。 */
   takeScreenshot(): Promise<Screenshot>;
+  /** 开启 / 关闭键鼠模拟 */
+  setInputSimulationEnabled(enabled: boolean): Promise<OperationResult>;
+  /** 执行一个自动化任务。失败时抛出一句可展示的话。 */
+  runAutomation(actions: AutomationAction[]): Promise<AutomationReport>;
+  /** 中断正在执行的自动化任务 */
+  stopAutomation(): Promise<void>;
+  /** 改正在编辑的动作列表 */
+  setAutomationDraft(actions: AutomationAction[]): void;
   testConnection(config: ModelConfig): Promise<OperationResult>;
   resetAll(): Promise<void>;
 }
@@ -185,6 +213,10 @@ export function createSettingsStore(services: Services): SettingsStore {
     recentReads: [],
     screenshotEnabled: defaultSettings().permission.screenshot,
     lastScreenshot: null,
+    inputSimulationEnabled: defaultSettings().permission.inputSimulation,
+    automationRunning: false,
+    automationReport: null,
+    automationDraft: [],
 
     async load() {
       // 五件事互不依赖，并行拿。任何一件失败都不该让整个设置页打不开，
@@ -240,6 +272,7 @@ export function createSettingsStore(services: Services): SettingsStore {
         recentReads: await services.platform.recentFileReads().catch(() => []),
         // 开关值只有我们这儿有，没有别的权威来源
         screenshotEnabled: settings.permission.screenshot,
+        inputSimulationEnabled: settings.permission.inputSimulation,
       });
     },
 
@@ -514,9 +547,14 @@ export function createSettingsStore(services: Services): SettingsStore {
       if (result.ok) {
         set({
           screenshotEnabled: enabled,
-          settings: { ...get().settings, permission: { screenshot: enabled } },
+          // 展开现有 permission 再改一项：直接写 { screenshot: enabled } 会把
+          // 键鼠模拟那个开关一起抹掉 —— 两个开关存在同一张表里，改一个不能丢另一个
+          settings: {
+            ...get().settings,
+            permission: { ...get().settings.permission, screenshot: enabled },
+          },
           // 关掉能力时把上一次的画面一并丢掉：能力都关了，
-        // 还留着一张屏幕快照在内存里没有道理，而且它是最敏感的那份数据。
+          // 还留着一张屏幕快照在内存里没有道理，而且它是最敏感的那份数据。
           ...(enabled ? {} : { lastScreenshot: null }),
         });
       }
@@ -529,6 +567,53 @@ export function createSettingsStore(services: Services): SettingsStore {
       const shot = await services.platform.takeScreenshot();
       set({ lastScreenshot: shot });
       return shot;
+    },
+
+    async setInputSimulationEnabled(enabled) {
+      let result: OperationResult;
+      try {
+        result = await services.platform.setInputSimulationEnabled(enabled);
+      } catch (error) {
+        return {
+          ok: false,
+          message: toUserFacingError(error, '当前运行环境不支持键鼠模拟。'),
+        };
+      }
+
+      if (result.ok) {
+        set({
+          inputSimulationEnabled: enabled,
+          settings: { ...get().settings, permission: { ...get().settings.permission, inputSimulation: enabled } },
+          // 关掉能力时把上一次的执行报告一并丢掉：能力都关了，
+          // 还留着「它刚才做了什么」的清单没有道理。
+          // 截图预览同理，但没有它就没法取坐标，所以留着 —— 见组件里的说明。
+          ...(enabled ? {} : { automationReport: null }),
+        });
+      }
+
+      return result;
+    },
+
+    async runAutomation(actions) {
+      // 执行期间界面要能显示「正在跑」并提供停止按钮
+      set({ automationRunning: true });
+      try {
+        const report = await services.platform.runAutomation(actions);
+        set({ automationReport: report });
+        return report;
+      } finally {
+        set({ automationRunning: false });
+      }
+    },
+
+    setAutomationDraft(actions) {
+      set({ automationDraft: actions });
+    },
+
+    async stopAutomation() {
+      // 不在这里把 automationRunning 置回 false：命令是异步的，
+      // 请求发出去不等于任务已经停了。真正的收尾在 runAutomation 的 finally 里。
+      await services.platform.stopAutomation();
     },
 
     async testConnection(config) {
@@ -599,6 +684,8 @@ export function createSettingsStore(services: Services): SettingsStore {
         recentReads,
         screenshotEnabled: persistedSettings.permission.screenshot,
         lastScreenshot: null,
+        inputSimulationEnabled: persistedSettings.permission.inputSimulation,
+        automationReport: null,
       });
 
       if (resetError !== null) throw resetError;

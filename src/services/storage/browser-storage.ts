@@ -89,6 +89,13 @@ export const DEFAULT_FILE_DIRECTORY = '';
  */
 export const DEFAULT_SCREENSHOT_ENABLED = false;
 
+/**
+ * 键鼠模拟的默认值：**关闭**。
+ * 与 Rust 侧保持一致 —— 技术方案第 6 节要求默认关闭高风险自动化能力，
+ * 而这是其中最重的一项。
+ */
+export const DEFAULT_INPUT_SIMULATION_ENABLED = false;
+
 export function defaultSettings(): AppSettings {
   return {
     persona: { ...DEFAULT_PERSONA },
@@ -97,7 +104,10 @@ export function defaultSettings(): AppSettings {
     notification: { onReplyComplete: DEFAULT_NOTIFY_ON_REPLY_COMPLETE },
     shortcut: { toggleWindow: DEFAULT_GLOBAL_SHORTCUT },
     fileAccess: { directory: DEFAULT_FILE_DIRECTORY },
-    permission: { screenshot: DEFAULT_SCREENSHOT_ENABLED },
+    permission: {
+      screenshot: DEFAULT_SCREENSHOT_ENABLED,
+      inputSimulation: DEFAULT_INPUT_SIMULATION_ENABLED,
+    },
   };
 }
 

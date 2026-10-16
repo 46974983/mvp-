@@ -18,6 +18,7 @@
 //! 具体逻辑都在各自模块里，是为了让「外壳」看起来就是外壳 ——
 //! 想查什么能力被开放了，看 `invoke_handler` 那一份清单就够了。
 
+mod automation;
 mod autostart;
 mod chat;
 mod commands;
@@ -34,8 +35,8 @@ mod shortcut;
 mod tray;
 mod window;
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use tauri::Manager;
 
@@ -92,6 +93,9 @@ pub fn run() {
                 cancel: Arc::new(AtomicBool::new(false)),
                 window: WindowRuntime::new(settings.window.close_to_tray),
                 read_audit: ReadAudit::default(),
+                automation_cancel: Arc::new(AtomicBool::new(false)),
+                automation_report: Arc::new(Mutex::new(None)),
+                permissions_lock: Arc::new(Mutex::new(())),
             });
 
             // 托盘必须在 state 之后建：菜单里的「退出」要能改 state
@@ -193,6 +197,11 @@ pub fn run() {
             commands::list_authorized_directory,
             commands::read_authorized_file,
             commands::recent_file_reads,
+            // 自动化（阶段 D）
+            commands::set_input_simulation_enabled,
+            commands::run_automation,
+            commands::stop_automation,
+            commands::automation_last_run,
             // 截屏（阶段 D）
             commands::set_screenshot_enabled,
             commands::take_screenshot,

@@ -25,6 +25,7 @@ export const PLATFORM_CAPABILITIES = [
   'global-shortcut',
   'file-read',
   'screenshot',
+  'input-simulation',
 ] as const;
 export type PlatformCapability = (typeof PLATFORM_CAPABILITIES)[number];
 
@@ -72,6 +73,12 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   'file-read': {
     label: '读取本地文件',
     description: '在设置页浏览、预览你显式授权的那一个文件夹里的文本文件；目前不会自动附加到聊天请求',
+    plannedStage: 'D',
+    desktopImplemented: true,
+  },
+  'input-simulation': {
+    label: '键鼠模拟',
+    description: '按你确认过的动作列表去操作鼠标键盘。默认关闭，每次执行前都要确认',
     plannedStage: 'D',
     desktopImplemented: true,
   },
@@ -180,6 +187,43 @@ export interface Screenshot {
   monitorCount: number;
   /** 毫秒时间戳 */
   capturedAt: number;
+}
+
+export type MouseButton = 'left' | 'right' | 'middle';
+
+/**
+ * 一个自动化动作。
+ *
+ * **这是协议的全部，而且是刻意做窄的**：没有条件、没有循环、没有变量，
+ * 也没有按键组合和拖拽。表达不出「重复执行」这件事，就不可能写出无限循环 ——
+ * 这比「运行时检测到死循环再拦住」可靠得多。
+ *
+ * 协议与各项上限的理由写成了一篇文档：`docs/AUTOMATION_PROTOCOL.md`。
+ * 加新动作要同时改协议、校验、上限、预览文案和测试。
+ */
+export type AutomationAction =
+  | { kind: 'move'; x: number; y: number }
+  | { kind: 'click'; x: number; y: number; button: MouseButton }
+  /** 输入文字。**必须跟在一个 click 后面** —— 文字会打到当前有焦点的窗口上 */
+  | { kind: 'type'; text: string }
+  | { kind: 'wait'; ms: number };
+
+/** 一步的执行结果 */
+export interface AutomationStep {
+  index: number;
+  /** 人话描述 —— 和预览里看到的是同一句 */
+  action: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** 一次执行的报告 */
+export interface AutomationReport {
+  steps: AutomationStep[];
+  /** 是否被用户中断（区别于「跑完了」和「超时了」） */
+  stopped: boolean;
+  timedOut: boolean;
+  elapsedMs: number;
 }
 
 /**
@@ -301,6 +345,31 @@ export interface PlatformService {
 
   /** 最近的读取记录，新的在前。只在内存里，不落盘。 */
   recentFileReads(): Promise<RecentRead[]>;
+
+  /**
+   * 开启 / 关闭键鼠模拟。
+   *
+   * 技术方案第 6 节要求高风险自动化能力**默认关闭**。
+   * 这一项是全项目权限最重的：前面几项最坏是「看到了不该看的」，
+   * 这一项能代替用户去操作别的程序。
+   */
+  setInputSimulationEnabled(enabled: boolean): Promise<OperationResult>;
+
+  /**
+   * 执行一个自动化任务。
+   *
+   * **Rust 侧会在动手之前把动作列表校验一遍**（数量、总时长、坐标范围、
+   * 以及「输入动作之前必须有点击」），所以传错了不会出现「鼠标先动了一截再报错」。
+   *
+   * 返回执行报告；被中断和超时都会如实写在报告里。
+   */
+  runAutomation(actions: AutomationAction[]): Promise<AutomationReport>;
+
+  /** 中断正在执行的自动化任务。最多延迟到当前这一步结束。 */
+  stopAutomation(): Promise<void>;
+
+  /** 最近一次执行报告。只在内存里。 */
+  automationLastRun(): Promise<AutomationReport | null>;
 
   /**
    * 抓一张主屏截图。

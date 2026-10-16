@@ -485,6 +485,9 @@ impl Database {
                 screenshot: lookup(crate::models::setting_keys::PERMISSION_SCREENSHOT)
                     .map(|value| value.trim().eq_ignore_ascii_case("true"))
                     .unwrap_or(defaults.permission.screenshot),
+                input_simulation: lookup(crate::models::setting_keys::PERMISSION_INPUT_SIMULATION)
+                    .map(|value| value.trim().eq_ignore_ascii_case("true"))
+                    .unwrap_or(defaults.permission.input_simulation),
             },
         })
     }
@@ -570,14 +573,24 @@ impl Database {
 
     /// 写高风险能力的开关
     pub fn save_permission_settings(&self, permission: &PermissionSettings) -> AppResult<()> {
-        self.write_settings(&[(
-            crate::models::setting_keys::PERMISSION_SCREENSHOT,
-            if permission.screenshot {
-                "true"
-            } else {
-                "false"
-            },
-        )])
+        self.write_settings(&[
+            (
+                crate::models::setting_keys::PERMISSION_SCREENSHOT,
+                if permission.screenshot {
+                    "true"
+                } else {
+                    "false"
+                },
+            ),
+            (
+                crate::models::setting_keys::PERMISSION_INPUT_SIMULATION,
+                if permission.input_simulation {
+                    "true"
+                } else {
+                    "false"
+                },
+            ),
+        ])
     }
 
     fn write_settings(&self, entries: &[(&str, &str)]) -> AppResult<()> {
@@ -1423,5 +1436,95 @@ mod tests {
         let messages = database.list_messages(&conversation.id).unwrap();
         assert_eq!(messages[0].content, "还在的消息");
         assert!(messages[0].attachments.is_empty());
+    }
+
+    #[test]
+    fn high_risk_capabilities_default_to_off() {
+        // 技术方案第 6 节要求默认关闭高风险自动化能力。
+        // 键鼠模拟是全项目权限最重的一项，尤其不能默认开着。
+        let database = database();
+        let permission = database.get_settings().unwrap().permission;
+
+        assert!(!permission.screenshot);
+        assert!(!permission.input_simulation);
+    }
+
+    #[test]
+    fn high_risk_switches_round_trip_independently() {
+        // 两个开关存在同一张表里，写一个不能把另一个带回默认值 ——
+        // 那种「一半新一半旧」的状态最难排查。
+        let database = database();
+
+        database
+            .save_permission_settings(&PermissionSettings {
+                screenshot: true,
+                input_simulation: false,
+            })
+            .unwrap();
+        let after_first = database.get_settings().unwrap().permission;
+        assert!(after_first.screenshot);
+        assert!(!after_first.input_simulation);
+
+        database
+            .save_permission_settings(&PermissionSettings {
+                screenshot: true,
+                input_simulation: true,
+            })
+            .unwrap();
+        let after_second = database.get_settings().unwrap().permission;
+        assert!(after_second.screenshot, "改键鼠模拟不该把截屏改回去");
+        assert!(after_second.input_simulation);
+    }
+
+    #[test]
+    fn a_broken_high_risk_value_falls_back_to_off() {
+        // 高风险开关出问题时的失败方向必须选「关」：值写坏了、被人手改过，
+        // 都要回到关闭，而不是碰巧打开。
+        let database = database();
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                    params!["permission.input_simulation", "yes"],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(!database.get_settings().unwrap().permission.input_simulation);
+    }
+
+    #[test]
+    fn an_explicit_true_turns_the_switch_on() {
+        // 和上一条互为对照：只认 "true"，认对了就要真的开
+        let database = database();
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+                    params!["permission.input_simulation", "true"],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert!(database.get_settings().unwrap().permission.input_simulation);
+    }
+
+    #[test]
+    fn reset_turns_high_risk_capabilities_back_off() {
+        let database = database();
+        database
+            .save_permission_settings(&PermissionSettings {
+                screenshot: true,
+                input_simulation: true,
+            })
+            .unwrap();
+
+        database.reset_all().unwrap();
+
+        let permission = database.get_settings().unwrap().permission;
+        assert!(!permission.screenshot);
+        assert!(!permission.input_simulation, "重置之后键鼠模拟必须回到关闭");
     }
 }
