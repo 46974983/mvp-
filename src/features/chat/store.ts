@@ -169,6 +169,13 @@ export function createChatStore(
    * 所以重放历史时不复刻协议形状，只靠附件把内容带回去（见 README）。
    */
   let toolTurns: ChatTurn[] = [];
+  // toolTurns 重建了对应的 assistant(tool_calls) 消息，避免它们重复出现在普通历史里。
+  let toolTurnMessageIds = new Set<string>();
+
+  function clearToolTurns(): void {
+    toolTurns = [];
+    toolTurnMessageIds.clear();
+  }
   /**
    * 当前这一轮占位消息的 id。
    *
@@ -470,6 +477,7 @@ export function createChatStore(
       .messages.filter(
         (message) =>
           message.id !== placeholder.id &&
+          !toolTurnMessageIds.has(message.id) &&
           // 只发附件不写字的消息也要进历史 —— 单看 content 会把它整条丢掉，
           // 于是模型在下一轮就看不到那张图了
           (message.content.trim().length > 0 || message.attachments.length > 0)
@@ -531,7 +539,7 @@ export function createChatStore(
     currentPlaceholderId = null;
 
     if (result.outcome !== 'complete') {
-      toolTurns = [];
+      clearToolTurns();
       return;
     }
 
@@ -540,7 +548,7 @@ export function createChatStore(
     if (result.toolCalls.length > 0) {
       const roundsUsed = toolTurns.filter((turn) => (turn.toolCalls?.length ?? 0) > 0).length;
       if (roundsUsed >= MAX_TOOL_ROUNDS) {
-        toolTurns = [];
+        clearToolTurns();
         set({
           error: `模型连续 ${MAX_TOOL_ROUNDS} 轮要求更多内容，已经停下。可以把它想要的东西直接附在消息里再问一次。`,
         });
@@ -553,7 +561,7 @@ export function createChatStore(
       return;
     }
 
-    toolTurns = [];
+    clearToolTurns();
     await notifyReplyFinished(result.text);
   }
 
@@ -568,7 +576,7 @@ export function createChatStore(
     }
 
     const message = toUserFacingError(error, fallback);
-    toolTurns = [];
+    clearToolTurns();
     set({ error: message, toolRequest: null, toolProgress: [] });
 
     await notifyReplyFinished(message);
@@ -615,7 +623,7 @@ export function createChatStore(
       sendInFlight = true;
       cancelRequested = false;
       // 新一轮对话，工具调用的中间轮次清空
-      toolTurns = [];
+      clearToolTurns();
 
       set({
         sending: true,
@@ -693,7 +701,7 @@ export function createChatStore(
         // 用户在执行期间点了停止：不发下一轮请求了。
         // 但**工具结果仍然要整理完整**（上面已经做了），这样协议形状不会缺一块。
         if (outcome.cancelled || cancelRequested) {
-          toolTurns = [];
+          clearToolTurns();
           set({ lastOutcome: 'aborted' });
           return;
         }
@@ -701,6 +709,7 @@ export function createChatStore(
         // 模型的「工具调用」那条消息在这一轮里只是协议的一部分，
         // 它已经作为一条普通消息落过库了（内容是它说的话）。
         // 这里把它补回成带 tool_calls 的形状再发回去。
+        toolTurnMessageIds.add(request.messageId);
         toolTurns.push({
           role: 'assistant',
           content: request.text,

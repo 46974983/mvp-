@@ -799,6 +799,9 @@ describe('模型要求访问内容', () => {
     const assistantCall = second.find((turn) => (turn.toolCalls?.length ?? 0) > 0);
     const toolResult = second.find((turn) => turn.role === 'tool');
 
+    expect(
+      second.filter((turn) => turn.role === 'assistant' && turn.content === '我先看一下。')
+    ).toHaveLength(1);
     expect(assistantCall?.toolCalls?.[0]?.id).toBe('call_1');
     expect(toolResult?.toolCallId).toBe('call_1');
     expect(toolResult?.content).toContain('内容:notes.md');
