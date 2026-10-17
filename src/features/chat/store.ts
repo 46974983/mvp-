@@ -26,14 +26,12 @@ import { createLogger, toUserFacingError } from '@/lib/log';
 import { summarizeForNotification } from '@/lib/text';
 import type { ConversationsStore } from '@/features/conversations/store';
 import type { SettingsStore } from '@/features/settings/store';
+import { trimHistory } from './history';
 
 const logger = createLogger('chat');
 
 /** 流式过程中落盘的节流间隔：太长丢内容，太短白费 IO */
 const STREAM_PERSIST_INTERVAL_MS = 400;
-
-/** 传给模型的历史轮数上限。MVP 不做摘要压缩，先简单截断，避免请求无限膨胀。 */
-const MAX_HISTORY_TURNS = 40;
 
 /**
  * 一次对话里最多允许几轮「模型要东西 → 用户批 → 再问」。
@@ -492,7 +490,9 @@ export function createChatStore(
       model: modelConfig.modelName,
       systemPrompt: appSettings.persona.systemPrompt,
       // 工具中间轮次接在历史之后：它们只属于这一轮对话，不落库
-      messages: [...history.slice(-MAX_HISTORY_TURNS), ...toolTurns],
+      // 只裁持久化历史；工具中间轮次完整保留，由 MAX_TOOL_ROUNDS 单独管 ——
+      // 把它们也纳入预算的话，会直接切断「调用 + 结果」这条链
+      messages: [...trimHistory(history), ...toolTurns],
       tools: availableTools(),
     };
 

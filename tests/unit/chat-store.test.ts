@@ -1119,3 +1119,85 @@ describe('工具调用的进度、部分成功与取消', () => {
     expect(chat.getState().toolOutcome).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// 上下文裁剪（上下文管理第一步）
+// ---------------------------------------------------------------------------
+
+describe('历史裁剪与工具链', () => {
+  async function seedLongConversation(
+    services: ReturnType<typeof createTestServices>,
+    conversations: ReturnType<typeof createConversationsStore>,
+    count: number
+  ) {
+    const created = await conversations.getState().createConversation();
+    for (let index = 0; index < count; index += 1) {
+      await services.storage.conversations.appendMessage({
+        conversationId: created.id,
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `历史第 ${index} 条`,
+        status: 'complete',
+      });
+    }
+    await conversations.getState().reloadActiveMessages();
+  }
+
+  it('历史被裁掉之后，工具调用链仍然完整', async () => {
+    // 这一条守的是最容易出错的那个组合：**裁剪 + 工具链**。
+    // 一旦裁掉了 assistant(tool_calls) 却留下了 tool 结果，服务端会直接拒绝整次请求。
+    const { platform } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我看一下。', toolCalls: [fileCall('notes.md', 'call_trim')] },
+      { text: '看完了。' },
+    ]);
+    const { chat, conversations, services } = await setup(provider, platform);
+
+    await seedLongConversation(services, conversations, 45);
+    // 45 条历史 + 这一轮的 user 消息，远超条数上限，必定触发裁剪
+    await chat.getState().send('看看 notes.md');
+    await chat.getState().resolveToolRequest([true]);
+
+    const second = captures[1]?.messages ?? [];
+
+    // 1) 历史确实被裁了
+    expect(second.length).toBeLessThanOrEqual(41 + 3);
+    expect(second.some((turn) => turn.content === '历史第 0 条')).toBe(false);
+
+    // 2) 工具链没有被裁断：tool 结果前面要紧跟着发起它的那条 assistant
+    const toolIndex = second.findIndex((turn) => turn.role === 'tool');
+    expect(toolIndex).toBeGreaterThan(0);
+    expect(second[toolIndex - 1]?.toolCalls?.[0]?.id).toBe('call_trim');
+    expect(second[toolIndex]?.toolCallId).toBe('call_trim');
+
+    // 3) 首条是 user，不是「助手自说自话」开头
+    expect(second[0]?.role).toBe('user');
+
+    // 4) 附件仍然挂在回答上，重放历史时它就是上下文
+    const answer = conversations
+      .getState()
+      .messages.filter((message) => message.role === 'assistant')
+      .at(-1);
+    expect(answer?.attachments?.[0]?.name).toBe('notes.md');
+  });
+
+  it('裁剪不会把命令附带的工具轮次算进预算', async () => {
+    // 工具轮次由 MAX_TOOL_ROUNDS 单独管。把它们也塞进历史预算的话，
+    // 长对话里最后一个工具结果会被裁掉 —— 那正是模型最需要的那条。
+    const { platform } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我看一下。', toolCalls: [fileCall('notes.md', 'call_keep')] },
+      { text: '看完了。' },
+    ]);
+    const { chat, conversations, services } = await setup(provider, platform);
+
+    await seedLongConversation(services, conversations, 60);
+    await chat.getState().send('看看 notes.md');
+    await chat.getState().resolveToolRequest([true]);
+
+    const second = captures[1]?.messages ?? [];
+    const toolTurns = second.filter((turn) => turn.role === 'tool');
+
+    expect(toolTurns).toHaveLength(1);
+    expect(toolTurns[0]?.content).toContain('内容:notes.md');
+  });
+});

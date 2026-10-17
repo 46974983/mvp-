@@ -693,3 +693,45 @@ test('三种工具状态在界面上互斥，且各自说清了在做什么', ()
   // 失败原因要给用户看，不能只发回给模型
   assert.ok(card.includes('item.detail'), '结果卡片要显示失败原因');
 });
+
+// ---------------------------------------------------------------------------
+// 上下文裁剪（上下文管理第一步）
+// ---------------------------------------------------------------------------
+
+test('历史裁剪是纯函数，两个上限都有明确出处', () => {
+  const history = readFile('src/features/chat/history.ts');
+
+  assert.match(history, /export const MAX_HISTORY_MESSAGES = \d+/, '要有条数上限');
+  assert.match(history, /export const MAX_HISTORY_BYTES = [\d\s*]+;/, '要有字节上限');
+
+  // 单位必须在注释里写清楚 —— 上一个常量叫 TURNS 但算的是消息条数，
+  // 名字撒谎比数字写错更坑人
+  assert.match(history, /单位是消息条数/, '注明条数的单位是「消息」不是「轮」');
+  assert.match(history, /UTF-8/, '注明字节是按 UTF-8 算的');
+
+  // 必须是纯函数：不读 store、不发请求、不碰存储
+  for (const forbidden of ['getState', 'fetch(', 'invoke(', 'localStorage']) {
+    assert.ok(
+      !history.includes(forbidden),
+      `裁断历史应当是可单测的纯函数，不该出现 ${forbidden}`
+    );
+  }
+});
+
+test('裁剪只作用于持久化历史，工具轮次在裁剪之外拼接', () => {
+  // 这条守的是最容易出事的地方：把 toolTurns 也纳入预算，
+  // 长对话里最后一个工具结果就会被裁掉 —— 那正是模型最需要的那条，
+  // 而且「有 tool 结果没有对应的 tool_calls」会让服务端直接拒绝整次请求。
+  const store = readFile('src/features/chat/store.ts');
+
+  assert.match(
+    store,
+    /messages: \[\.\.\.trimHistory\(history\), \.\.\.toolTurns\]/,
+    '顺序必须是「先裁历史、再拼工具轮次」'
+  );
+  // 旧的硬截断不许回来
+  assert.ok(
+    !/slice\(-MAX_HISTORY/.test(store),
+    '不该再有 slice(-MAX_HISTORY…) 这种硬截断'
+  );
+});
