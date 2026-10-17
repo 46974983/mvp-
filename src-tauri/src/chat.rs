@@ -49,6 +49,75 @@ pub struct ChatTurn {
     /// 这一轮带的附件。不带这个字段的老调用方也合法。
     #[serde(default)]
     pub attachments: Vec<crate::models::ChatAttachment>,
+    /// 助手这一轮发起的工具调用。有它时 role 必须是 assistant。
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+    /// 这是一条「工具结果」，回答的是哪一次调用。
+    /// 有它时 role 必须是 tool，而且 `tool_call_id` 必须对上前面 assistant 的 id。
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+}
+
+/// 模型发起的一次工具调用。
+///
+/// `arguments` **保持成一段原始 JSON 文本**，不在这里解析成结构 ——
+/// 我们不猜模型会传什么形状的参数。真正要紧的东西（比如读取路径）
+/// 由 Rust 侧的命令独立校验，不依赖这段文本的可信度。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+/// 提供给模型的工具定义。
+///
+/// **只提供调用方点名要的那几个**：能力没开（比如截屏关着）时，
+/// 前端不会把对应的工具名传上来，模型也就不知道有这么个东西存在 ——
+/// 这比「先给它、执行时再拒」对用户更友好。
+pub fn tool_definitions(names: &[String]) -> serde_json::Value {
+    let mut tools = Vec::new();
+
+    for name in names {
+        let definition = match name.as_str() {
+            "read_file" => serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "读取用户已授权目录里的一个文件。\
+                                    每次读取都会先请用户确认。只能读相对路径，不能超出授权目录。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "相对授权目录的路径，例如 notes/todo.md"
+                            }
+                        },
+                        "required": ["path"]
+                    }
+                }
+            }),
+            "take_screenshot" => serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": "take_screenshot",
+                    "description": "抓取用户的主屏画面。每次抓取都会先请用户确认。\
+                                    返回的文字里只有尺寸信息，图片会作为一条消息附在后面。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
+            }),
+            // 不认识的名字直接跳过：多传了不该传的，不该让它变成可用的工具
+            _ => continue,
+        };
+        tools.push(definition);
+    }
+
+    serde_json::Value::Array(tools)
 }
 
 /// 一次对话请求。
@@ -60,6 +129,13 @@ pub struct ChatRequest {
     pub model: String,
     pub system_prompt: String,
     pub messages: Vec<ChatTurn>,
+    /// 这次请求允许模型使用哪些工具。
+    ///
+    /// 空数组表示不开工具调用 —— 请求体和加工具之前完全一样。
+    /// 前端按「哪些能力真的开着」来决定传什么，所以能力关着时
+    /// 模型连这个工具存在都不知道。
+    #[serde(default)]
+    pub tools: Vec<String>,
 }
 
 /// 通过 Tauri Channel 推给前端的增量事件
@@ -76,6 +152,12 @@ pub struct StreamResult {
     /// complete | aborted
     pub outcome: String,
     pub text: String,
+    /// 这一轮模型发起的工具调用。空表示它没要求什么。
+    ///
+    /// 注意：**有工具调用不代表 text 一定有内容** ——
+    /// 模型可以只发调用不说话，那种情况下 text 是空串。
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 // ---------------------------------------------------------------------------
@@ -272,16 +354,73 @@ pub fn build_payload(request: &ChatRequest) -> serde_json::Value {
         }));
     }
     for turn in &request.messages {
-        messages.push(serde_json::json!({
-            "role": turn.role,
-            "content": build_content(turn),
-        }));
+        messages.push(build_turn(turn));
     }
 
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "model": request.model,
         "messages": messages,
         "stream": true,
+    });
+
+    // 只在调用方点名要了工具时才带 tools —— 不带的话，请求体和加工具之前完全一样
+    let tools = tool_definitions(&request.tools);
+    if let Some(array) = tools.as_array()
+        && !array.is_empty()
+    {
+        payload["tools"] = tools;
+    }
+
+    payload
+}
+
+/// 组装一条消息。
+///
+/// 三种形态，优先级从高到低：
+///   1. 助手发起的工具调用 → `{role:"assistant", content, tool_calls}`
+///   2. 工具结果 → `{role:"tool", tool_call_id, content}`
+///   3. 普通消息 → 走 `build_content`（没有附件时是字符串，有附件时是数组）
+///
+/// 第 1、2 种必须成对出现且 id 对得上 —— 这是协议的要求，
+/// 对不上的话服务端会直接拒绝整次请求。
+fn build_turn(turn: &ChatTurn) -> serde_json::Value {
+    if !turn.tool_calls.is_empty() {
+        let calls: Vec<serde_json::Value> = turn
+            .tool_calls
+            .iter()
+            .map(|call| {
+                serde_json::json!({
+                    "id": call.id,
+                    "type": "function",
+                    "function": { "name": call.name, "arguments": call.arguments },
+                })
+            })
+            .collect();
+
+        return serde_json::json!({
+            "role": "assistant",
+            // 只发调用不说话时 content 用 null：有些服务端不接受空字符串
+            "content": if turn.content.trim().is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::String(turn.content.clone())
+            },
+            "tool_calls": calls,
+        });
+    }
+
+    if let Some(tool_call_id) = &turn.tool_call_id {
+        // 工具结果只能是文本：图片走不通这条路（见 README 里关于截图的说明）
+        return serde_json::json!({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": turn.content,
+        });
+    }
+
+    serde_json::json!({
+        "role": turn.role,
+        "content": build_content(turn),
     })
 }
 
@@ -290,10 +429,87 @@ pub fn build_payload(request: &ChatRequest) -> serde_json::Value {
 pub enum SseLine {
     /// 拿到了一个内容片段
     Delta(String),
+    /// 一次工具调用的一个片段
+    ToolCall(ToolCallDelta),
     /// 服务端说「说完了」
     Done,
-    /// 与本应用无关的行（注释、心跳、事件名等）
-    Ignore,
+}
+
+/// 工具调用的一个片段。
+///
+/// 协议把一次调用拆得很碎：第一片带 `id` 和 `name`，之后每一片只带
+/// 一小段 `arguments` 的字符串。所以要按下标攒起来，最后才是一段完整 JSON。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallDelta {
+    /// 同一次响应里第几个调用。多个调用会并行流式返回，靠它区分。
+    pub index: usize,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub arguments: Option<String>,
+}
+
+/// 把碎片攒成完整的工具调用。
+///
+/// 单独拎出来是因为它是有状态、有顺序的：片可能乱序到、可能重复带 name，
+/// 而且**一个 chunk 里可能同时有 content 和 tool_calls** —— 这些都得测。
+#[derive(Default)]
+pub struct ToolCallAccumulator {
+    calls: Vec<PartialToolCall>,
+}
+
+#[derive(Clone)]
+struct PartialToolCall {
+    index: usize,
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl ToolCallAccumulator {
+    pub fn push(&mut self, delta: &ToolCallDelta) {
+        if let Some(slot) = self.calls.iter_mut().find(|call| call.index == delta.index) {
+            if let Some(id) = &delta.id {
+                slot.id = id.clone();
+            }
+            if let Some(name) = &delta.name {
+                slot.name = name.clone();
+            }
+            if let Some(arguments) = &delta.arguments {
+                slot.arguments.push_str(arguments);
+            }
+            return;
+        }
+
+        self.calls.push(PartialToolCall {
+            index: delta.index,
+            id: delta.id.clone().unwrap_or_default(),
+            name: delta.name.clone().unwrap_or_default(),
+            arguments: delta.arguments.clone().unwrap_or_default(),
+        });
+    }
+
+    /// 收尾成一串完整调用。
+    ///
+    /// 丢掉 name 为空的：有些服务端会在末尾补一个纯占位的空调用。
+    /// id 缺失时补一个确定的占位 —— 不然前端拿不到能对应回去的 id。
+    pub fn finish(&self) -> Vec<ToolCall> {
+        let mut calls = self.calls.clone();
+        calls.sort_by_key(|call| call.index);
+
+        calls
+            .into_iter()
+            .filter(|call| !call.name.is_empty())
+            .map(|call| ToolCall {
+                id: if call.id.is_empty() {
+                    format!("call_{}", call.index)
+                } else {
+                    call.id
+                },
+                name: call.name,
+                arguments: call.arguments,
+            })
+            .collect()
+    }
 }
 
 #[derive(Default)]
@@ -309,25 +525,25 @@ impl SseDecoder {
         while let Some(position) = self.pending.iter().position(|byte| *byte == b'\n') {
             let mut line: Vec<u8> = self.pending.drain(..=position).collect();
             line.pop();
-            lines.push(parse_sse_bytes(&line));
+            lines.extend(parse_sse_bytes(&line));
         }
 
         lines
     }
 
-    fn finish(&mut self) -> Option<SseLine> {
+    fn finish(&mut self) -> Vec<SseLine> {
         if self.pending.is_empty() {
-            return None;
+            return Vec::new();
         }
-        Some(parse_sse_bytes(&std::mem::take(&mut self.pending)))
+        parse_sse_bytes(&std::mem::take(&mut self.pending))
     }
 }
 
-fn parse_sse_bytes(bytes: &[u8]) -> SseLine {
+fn parse_sse_bytes(bytes: &[u8]) -> Vec<SseLine> {
     let line = bytes.strip_suffix(b"\r").unwrap_or(bytes);
     match std::str::from_utf8(line) {
         Ok(line) => parse_sse_line(line),
-        Err(_) => SseLine::Ignore,
+        Err(_) => Vec::new(),
     }
 }
 
@@ -335,26 +551,76 @@ fn parse_sse_bytes(bytes: &[u8]) -> SseLine {
 ///
 /// OpenAI 兼容接口的流式格式是每行 `data: {json}`，最后一行 `data: [DONE]`。
 /// 解析失败的 JSON 一律当作无关行忽略 —— 流式解析不能因为一行看不懂就整段垮掉。
-pub fn parse_sse_line(line: &str) -> SseLine {
+pub fn parse_sse_line(line: &str) -> Vec<SseLine> {
     let line = line.trim();
     let Some(payload) = line.strip_prefix("data:") else {
-        return SseLine::Ignore;
+        return Vec::new();
     };
     let payload = payload.trim();
 
     if payload.is_empty() {
-        return SseLine::Ignore;
+        return Vec::new();
     }
     if payload == "[DONE]" {
-        return SseLine::Done;
+        return vec![SseLine::Done];
     }
 
-    match serde_json::from_str::<serde_json::Value>(payload) {
-        Ok(value) => extract_delta(&value)
-            .map(SseLine::Delta)
-            .unwrap_or(SseLine::Ignore),
-        Err(_) => SseLine::Ignore,
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return Vec::new();
+    };
+
+    // 返回一个列表而不是单个值：一个 chunk 里**可能同时有 content 和 tool_calls**。
+    // 只取其中一种的话，另一种会被静默丢掉。
+    let mut lines = Vec::new();
+
+    if let Some(text) = extract_delta(&value) {
+        lines.push(SseLine::Delta(text));
     }
+    lines.extend(extract_tool_call_deltas(&value));
+
+    lines
+}
+
+/// 取出这一段里的工具调用碎片。
+fn extract_tool_call_deltas(value: &serde_json::Value) -> Vec<SseLine> {
+    let calls = value
+        .get("choices")
+        .and_then(|choices| choices.get(0))
+        .and_then(|choice| choice.get("delta"))
+        .and_then(|delta| delta.get("tool_calls"))
+        .and_then(|calls| calls.as_array());
+
+    let Some(calls) = calls else {
+        return Vec::new();
+    };
+
+    calls
+        .iter()
+        .enumerate()
+        .map(|(position, call)| {
+            let function = call.get("function");
+            SseLine::ToolCall(ToolCallDelta {
+                // 有些服务端不发 index，那种情况用它在数组里的位置
+                index: call
+                    .get("index")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value as usize)
+                    .unwrap_or(position),
+                id: call
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                name: function
+                    .and_then(|function| function.get("name"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                arguments: function
+                    .and_then(|function| function.get("arguments"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+            })
+        })
+        .collect()
 }
 
 async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
@@ -524,6 +790,7 @@ pub async fn stream_chat(
             return Ok(StreamResult {
                 outcome: "aborted".to_string(),
                 text: String::new(),
+                tool_calls: Vec::new(),
             });
         }
     };
@@ -532,6 +799,7 @@ pub async fn stream_chat(
         return Ok(StreamResult {
             outcome: "aborted".to_string(),
             text: String::new(),
+            tool_calls: Vec::new(),
         });
     }
 
@@ -543,6 +811,7 @@ pub async fn stream_chat(
                 return Ok(StreamResult {
                     outcome: "aborted".to_string(),
                     text: String::new(),
+                    tool_calls: Vec::new(),
                 });
             }
         };
@@ -552,12 +821,14 @@ pub async fn stream_chat(
     let mut stream = response.bytes_stream();
     let mut decoder = SseDecoder::default();
     let mut accumulated = String::new();
+    let mut tool_calls = ToolCallAccumulator::default();
 
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Ok(StreamResult {
                 outcome: "aborted".to_string(),
                 text: accumulated,
+                tool_calls: tool_calls.finish(),
             });
         }
 
@@ -572,23 +843,25 @@ pub async fn stream_chat(
         // 先按字节找行边界，不能对每个网络 chunk 单独做 UTF-8 解码：
         // chunk 可能刚好切在一个汉字中间。
         for line in decoder.push(&next) {
-            if apply_sse_line(line, &mut accumulated, on_event) {
+            if apply_sse_line(line, &mut accumulated, &mut tool_calls, on_event) {
                 return Ok(StreamResult {
                     outcome: "complete".to_string(),
                     text: accumulated,
+                    tool_calls: tool_calls.finish(),
                 });
             }
         }
     }
 
     // 最后一行 SSE 允许没有换行符，EOF 时也要处理它。
-    if let Some(line) = decoder.finish()
-        && apply_sse_line(line, &mut accumulated, on_event)
-    {
-        return Ok(StreamResult {
-            outcome: "complete".to_string(),
-            text: accumulated,
-        });
+    for line in decoder.finish() {
+        if apply_sse_line(line, &mut accumulated, &mut tool_calls, on_event) {
+            return Ok(StreamResult {
+                outcome: "complete".to_string(),
+                text: accumulated,
+                tool_calls: tool_calls.finish(),
+            });
+        }
     }
 
     // 有些服务端不发 [DONE]，直接断流。这时按「说完了」处理。
@@ -599,15 +872,23 @@ pub async fn stream_chat(
             "complete".to_string()
         },
         text: accumulated,
+        tool_calls: tool_calls.finish(),
     })
 }
 
 fn apply_sse_line(
     line: SseLine,
     accumulated: &mut String,
+    tool_calls: &mut ToolCallAccumulator,
     on_event: &Channel<StreamEvent>,
 ) -> bool {
     match line {
+        SseLine::ToolCall(delta) => {
+            // 工具调用**不推给前端**：它要等整段参数收完才有意义，
+            // 半截 JSON 推上去只会让界面显示一堆乱码。整段在收尾时一起返回。
+            tool_calls.push(&delta);
+            false
+        }
         SseLine::Delta(text) => {
             accumulated.push_str(&text);
             // 推累计全文：前端不需要自己维护拼接状态
@@ -617,7 +898,6 @@ fn apply_sse_line(
             false
         }
         SseLine::Done => true,
-        SseLine::Ignore => false,
     }
 }
 
@@ -635,6 +915,16 @@ mod tests {
             role: role.into(),
             content: content.into(),
             attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    fn tool_call(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: arguments.into(),
         }
     }
 
@@ -662,6 +952,7 @@ mod tests {
         ChatRequest {
             model: "gpt-4o-mini".into(),
             system_prompt: "你是一个简洁的助手。".into(),
+            tools: Vec::new(),
             messages: vec![
                 turn("user", "你好"),
                 turn("assistant", "你好，有什么可以帮你的？"),
@@ -776,28 +1067,33 @@ mod tests {
     #[test]
     fn parses_a_delta_line() {
         let line = r#"data: {"choices":[{"delta":{"content":"你好"},"index":0}]}"#;
-        assert_eq!(parse_sse_line(line), SseLine::Delta("你好".to_string()));
+        assert_eq!(
+            parse_sse_line(line),
+            vec![SseLine::Delta("你好".to_string())]
+        );
     }
 
     #[test]
     fn parses_done_marker() {
-        assert_eq!(parse_sse_line("data: [DONE]"), SseLine::Done);
+        assert_eq!(parse_sse_line("data: [DONE]"), vec![SseLine::Done]);
     }
 
     #[test]
     fn ignores_comments_and_other_events() {
-        assert_eq!(parse_sse_line(": ping"), SseLine::Ignore);
-        assert_eq!(parse_sse_line("event: message"), SseLine::Ignore);
-        assert_eq!(parse_sse_line(""), SseLine::Ignore);
-        assert_eq!(parse_sse_line("data: "), SseLine::Ignore);
+        // 与本应用无关的行产出空列表 —— 以前是一个 Ignore 变体，
+        // 现在改成空列表：更少的枚举变体意味着调用方少一处要处理的分支
+        assert!(parse_sse_line(": ping").is_empty());
+        assert!(parse_sse_line("event: message").is_empty());
+        assert!(parse_sse_line("").is_empty());
+        assert!(parse_sse_line("data: ").is_empty());
     }
 
     #[test]
     fn ignores_unparseable_and_contentless_chunks() {
-        assert_eq!(parse_sse_line("data: {not json}"), SseLine::Ignore);
+        assert!(parse_sse_line("data: {not json}").is_empty());
         // 只有 role 的第一条 chunk，没有内容，不该产生空增量
         let line = r#"data: {"choices":[{"delta":{"role":"assistant"}}]}"#;
-        assert_eq!(parse_sse_line(line), SseLine::Ignore);
+        assert!(parse_sse_line(line).is_empty());
     }
 
     #[test]
@@ -821,7 +1117,7 @@ mod tests {
         assert_eq!(decoder.push(line.as_bytes()), Vec::<SseLine>::new());
         assert_eq!(
             decoder.finish(),
-            Some(SseLine::Delta("最后一段".to_string()))
+            vec![SseLine::Delta("最后一段".to_string())]
         );
     }
 
@@ -871,6 +1167,8 @@ mod tests {
             role: role.into(),
             content: content.into(),
             attachments,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }
     }
 
@@ -1026,5 +1324,241 @@ mod tests {
         let mut files_only = request();
         files_only.messages = vec![turn_with("user", "看", vec![file_attachment("a.txt", "x")])];
         assert!(!contains_screenshot(&files_only));
+    }
+
+    // ---- 工具调用：流式碎片 ----
+
+    #[test]
+    fn assembles_a_tool_call_from_fragments() {
+        // 协议把一次调用拆得很碎：第一片带 id 和 name，之后每一片只带
+        // 一小段 arguments 的字符串。攒错一个字符，参数就是坏 JSON。
+        let mut accumulator = ToolCallAccumulator::default();
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: Some("call_abc".into()),
+            name: Some("read_file".into()),
+            arguments: Some(String::new()),
+        });
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: None,
+            name: None,
+            arguments: Some("{\"path\":".into()),
+        });
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: None,
+            name: None,
+            arguments: Some("\"notes.md\"}".into()),
+        });
+
+        let calls = accumulator.finish();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_abc");
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].arguments, r#"{"path":"notes.md"}"#);
+    }
+
+    #[test]
+    fn assembles_two_calls_in_parallel() {
+        // 模型可以在一次响应里要求好几样东西，它们的碎片会交错到达
+        let mut accumulator = ToolCallAccumulator::default();
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: Some("a".into()),
+            name: Some("read_file".into()),
+            arguments: Some("{\"path\":".into()),
+        });
+        accumulator.push(&ToolCallDelta {
+            index: 1,
+            id: Some("b".into()),
+            name: Some("take_screenshot".into()),
+            arguments: Some("{}".into()),
+        });
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: None,
+            name: None,
+            arguments: Some("\"a.txt\"}".into()),
+        });
+
+        let calls = accumulator.finish();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].arguments, r#"{"path":"a.txt"}"#);
+        assert_eq!(calls[1].name, "take_screenshot");
+    }
+
+    #[test]
+    fn a_chunk_can_carry_both_content_and_tool_calls() {
+        // 只取其中一种的话，另一种会被静默丢掉 —— 这正是最难察觉的那类 bug
+        let line = concat!(
+            r#"data: {"choices":[{"delta":{"content":"我看看","tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{}"}}]}}]}"#
+        );
+
+        let lines = parse_sse_line(line);
+        assert!(
+            lines
+                .iter()
+                .any(|line| matches!(line, SseLine::Delta(text) if text == "我看看"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| matches!(line, SseLine::ToolCall(_)))
+        );
+    }
+
+    #[test]
+    fn a_missing_index_falls_back_to_the_array_position() {
+        // 有些服务端不发 index。用位置兜底，否则两个调用会黏成一个
+        let line = r#"data: {"choices":[{"delta":{"tool_calls":[{"id":"x","function":{"name":"take_screenshot","arguments":"{}"}}]}}]}"#;
+        let delta = parse_sse_line(line)
+            .into_iter()
+            .find_map(|line| match line {
+                SseLine::ToolCall(delta) => Some(delta),
+                _ => None,
+            })
+            .expect("应当解析出一个工具调用碎片");
+
+        assert_eq!(delta.index, 0);
+        assert_eq!(delta.name.as_deref(), Some("take_screenshot"));
+    }
+
+    #[test]
+    fn a_placeholder_call_without_a_name_is_dropped() {
+        // 有些服务端会在末尾补一个只有 index 的空调用。
+        // 留着它的话，前端会拿到一个不知道要执行什么的条目。
+        let mut accumulator = ToolCallAccumulator::default();
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: Some("real".into()),
+            name: Some("read_file".into()),
+            arguments: Some("{}".into()),
+        });
+        accumulator.push(&ToolCallDelta {
+            index: 1,
+            id: None,
+            name: None,
+            arguments: None,
+        });
+
+        assert_eq!(accumulator.finish().len(), 1);
+    }
+
+    #[test]
+    fn a_call_without_an_id_gets_a_stable_placeholder() {
+        // 没有 id 就没法把工具结果对回去，服务端会拒绝整次请求
+        let mut accumulator = ToolCallAccumulator::default();
+        accumulator.push(&ToolCallDelta {
+            index: 3,
+            id: None,
+            name: Some("read_file".into()),
+            arguments: Some("{}".into()),
+        });
+
+        let calls = accumulator.finish();
+        assert_eq!(calls[0].id, "call_3");
+    }
+
+    // ---- 工具调用：请求组装 ----
+
+    #[test]
+    fn no_tools_means_no_tools_field_at_all() {
+        // 不开工具调用时，请求体必须和加这个功能之前完全一样
+        let payload = build_payload(&request());
+        assert!(
+            payload.get("tools").is_none(),
+            "没有点名要工具时不该带 tools"
+        );
+    }
+
+    #[test]
+    fn only_the_requested_tools_are_offered() {
+        // 能力没开时前端不会传那个名字，模型连它存在都不知道 ——
+        // 这比「先给它、执行时再拒」对用户更友好
+        let mut request = request();
+        request.tools = vec!["read_file".into()];
+
+        let payload = build_payload(&request);
+        let tools = payload["tools"].as_array().unwrap();
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["function"]["name"], "read_file");
+        assert_eq!(tools[0]["type"], "function");
+        assert!(
+            tools[0]["function"]["parameters"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == "path"),
+            "read_file 必须要求一个 path 参数"
+        );
+    }
+
+    #[test]
+    fn unknown_tool_names_are_ignored() {
+        // 传了不该传的，不该让它变成可用的工具
+        let mut request = request();
+        request.tools = vec!["read_file".into(), "run_shell".into(), "send_email".into()];
+
+        let tools = build_payload(&request)["tools"].as_array().unwrap().clone();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["function"]["name"], "read_file");
+    }
+
+    #[test]
+    fn all_unknown_tools_means_no_tools_field() {
+        let mut request = request();
+        request.tools = vec!["run_shell".into()];
+        assert!(build_payload(&request).get("tools").is_none());
+    }
+
+    #[test]
+    fn a_tool_call_turn_becomes_an_assistant_message_with_calls() {
+        let mut request = request();
+        request.messages.push(ChatTurn {
+            role: "assistant".into(),
+            content: String::new(),
+            attachments: Vec::new(),
+            tool_calls: vec![tool_call("call_1", "read_file", r#"{"path":"a.txt"}"#)],
+            tool_call_id: None,
+        });
+
+        let payload = build_payload(&request);
+        let messages = payload["messages"].as_array().unwrap();
+        let last = messages.last().unwrap();
+
+        assert_eq!(last["role"], "assistant");
+        assert!(
+            last["content"].is_null(),
+            "只发调用不说话时 content 应当是 null"
+        );
+        assert_eq!(last["tool_calls"][0]["id"], "call_1");
+        assert_eq!(last["tool_calls"][0]["type"], "function");
+        assert_eq!(last["tool_calls"][0]["function"]["name"], "read_file");
+        assert_eq!(
+            last["tool_calls"][0]["function"]["arguments"],
+            r#"{"path":"a.txt"}"#
+        );
+    }
+
+    #[test]
+    fn a_tool_result_turn_becomes_a_tool_message() {
+        let mut request = request();
+        request.messages.push(ChatTurn {
+            role: "tool".into(),
+            content: "文件内容".into(),
+            attachments: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some("call_1".into()),
+        });
+
+        let payload = build_payload(&request);
+        let last = payload["messages"].as_array().unwrap().last().unwrap();
+
+        assert_eq!(last["role"], "tool");
+        assert_eq!(last["tool_call_id"], "call_1");
+        assert_eq!(last["content"], "文件内容");
     }
 }

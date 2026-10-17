@@ -141,7 +141,7 @@ export class MockModelProvider implements ModelProvider {
       await this.sleep(this.options.chunkDelayMs);
     }
 
-    return { outcome: this.aborted ? 'aborted' : 'complete', text: emitted };
+    return { outcome: this.aborted ? 'aborted' : 'complete', text: emitted, toolCalls: [] };
   }
 
   abort(): void {

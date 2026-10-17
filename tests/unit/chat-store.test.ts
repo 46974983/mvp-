@@ -3,6 +3,10 @@ import { createChatStore } from '@/features/chat/store';
 import { createConversationsStore } from '@/features/conversations/store';
 import { createSettingsStore } from '@/features/settings/store';
 import type { ModelProvider } from '@/services/model';
+import type { ChatRequest, ToolCall } from '@/types';
+
+/** 与 Rust 侧的 MAX_TOOL_ROUNDS 保持一致 */
+const MAX_ROUNDS_FOR_TEST = 3;
 import { createBrowserStorage, type StorageService } from '@/services/storage';
 import {
   createBrowserPlatformService,
@@ -676,5 +680,261 @@ describe('把附件发进对话', () => {
     // 第二次发送时列表本来就是空的，不该抛错也不该复活
     await chat.getState().send('再看一次');
     expect(chat.getState().pendingAttachments).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 工具调用（阶段 E）：模型要求访问内容
+// ---------------------------------------------------------------------------
+
+/**
+ * 造一个「能读文件 + 能截屏」的平台，并记下每次读取的路径。
+ *
+ * 关键的一点：读文件走的是真实命令的形状（`readFile(relativePath)`），
+ * 所以「模型给的路径有没有被校验」这件事由 Rust 侧负责 ——
+ * 这里只验证我们把路径原样交给那条命令、并且没绕过它。
+ */
+function createToolCapablePlatform() {
+  const base = createBrowserPlatformService();
+  const reads: string[] = [];
+  let shots = 0;
+
+  const platform: PlatformService = {
+    ...base,
+    id: 'fake-tool-capable',
+    probeCapabilities: async () =>
+      new Set<PlatformCapability>(['file-read', 'screenshot']),
+    fileAccessStatus: async () => ({ directory: 'D://notes', available: true }),
+    readFile: async (relativePath: string) => {
+      reads.push(relativePath);
+      // 模拟 Rust 侧的越权拒绝：真实实现会在 file_access 里拦掉
+      if (relativePath.includes('..') || relativePath.startsWith('/') || relativePath.includes(':')) {
+        throw new Error('这个路径超出了已授权的目录范围，已拒绝读取。');
+      }
+      return { relativePath, content: `内容:${relativePath}`, bytes: 12, truncated: false };
+    },
+    setScreenshotEnabled: async () => ({ ok: true, message: '已开启截屏。' }),
+    takeScreenshot: async () => {
+      shots += 1;
+      return {
+        dataUrl: 'data:image/png;base64,SHOT',
+        width: 2560,
+        height: 1440,
+        bytes: 2048,
+        monitor: '主屏',
+        monitorCount: 1,
+        capturedAt: Date.now(),
+      };
+    },
+  };
+
+  return { platform, reads, shots: () => shots };
+}
+
+/** 按剧本返回的 provider：第一轮发工具调用，之后发文字 */
+function createScriptedProvider(script: Array<{ text: string; toolCalls?: ToolCall[] }>) {
+  const captures: ChatRequest[] = [];
+  let round = 0;
+
+  const provider: ModelProvider = {
+    id: 'scripted',
+    label: '按剧本返回的 provider',
+    performsNetworkRequest: false,
+    async testConnection() {
+      return { ok: true, message: 'ok' };
+    },
+    async streamChat(input, onDelta) {
+      captures.push(input);
+      const step = script[Math.min(round, script.length - 1)] ?? { text: '' };
+      round += 1;
+      onDelta(step.text);
+      return { outcome: 'complete', text: step.text, toolCalls: step.toolCalls ?? [] };
+    },
+    abort() {
+      /* 不用中断能力 */
+    },
+  };
+
+  return { provider, captures };
+}
+
+function fileCall(path: string, id = 'call_1'): ToolCall {
+  return { id, name: 'read_file', arguments: JSON.stringify({ path }) };
+}
+
+describe('模型要求访问内容', () => {
+  it('模型读文件之前会停下来等用户批准，不会自己读', async () => {
+    const { platform, reads } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我先看一下这个文件。', toolCalls: [fileCall('notes.md')] },
+      { text: '看完了，没问题。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('看看 notes.md');
+
+    const request = chat.getState().toolRequest;
+    expect(request?.calls).toHaveLength(1);
+    expect(request?.calls[0]?.name).toBe('read_file');
+    // 这一步最关键：没有用户批准就一个字节都不该读
+    expect(reads).toHaveLength(0);
+    expect(captures).toHaveLength(1);
+  });
+
+  it('批准之后把文件内容作为工具结果发回去，id 对得上', async () => {
+    const { platform, reads } = await createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我先看一下。', toolCalls: [fileCall('notes.md')] },
+      { text: '看完了。' },
+    ]);
+    const { chat, conversations } = await setup(provider, platform);
+
+    await chat.getState().send('看看 notes.md');
+    await chat.getState().resolveToolRequest([true]);
+
+    expect(reads).toEqual(['notes.md']);
+
+    // 第二轮请求里必须能看到：assistant(tool_calls) + tool(结果)
+    const second = captures[1]?.messages ?? [];
+    const assistantCall = second.find((turn) => (turn.toolCalls?.length ?? 0) > 0);
+    const toolResult = second.find((turn) => turn.role === 'tool');
+
+    expect(assistantCall?.toolCalls?.[0]?.id).toBe('call_1');
+    expect(toolResult?.toolCallId).toBe('call_1');
+    expect(toolResult?.content).toContain('内容:notes.md');
+
+    // 读到的内容也要挂在那条回答上：重放历史时它就是上下文
+    const answer = conversations.getState().messages.filter((message) => message.role === 'assistant').at(-1);
+    expect(answer?.attachments?.[0]?.name).toBe('notes.md');
+    expect(chat.getState().toolRequest).toBeNull();
+  });
+
+  it('拒绝时不读文件，并且明确告诉模型「用户拒绝了」', async () => {
+    const { platform, reads } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我先看一下。', toolCalls: [fileCall('notes.md')] },
+      { text: '那我就不看了。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('看看 notes.md');
+    await chat.getState().resolveToolRequest([false]);
+
+    expect(reads).toHaveLength(0);
+
+    const toolResult = captures[1]?.messages.find((turn) => turn.role === 'tool');
+    // 不说清楚的话，模型会一遍遍重试同一个请求，用户看到的是「它卡住了」
+    expect(toolResult?.content).toContain('拒绝');
+  });
+
+  it('越权路径被拒绝，模型能拿到失败原因', async () => {
+    const { platform, reads } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我看看。', toolCalls: [fileCall('../../../etc/passwd')] },
+      { text: '读不到，抱歉。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读一下外面的文件');
+    await chat.getState().resolveToolRequest([true]);
+
+    // 路径原样交给 Rust 侧的命令，由它判断 —— 前端不自己做安全判断
+    expect(reads).toEqual(['../../../etc/passwd']);
+    const toolResult = captures[1]?.messages.find((turn) => turn.role === 'tool');
+    expect(toolResult?.content).toContain('读取失败');
+    expect(toolResult?.content).toContain('超出');
+  });
+
+  it('参数坏掉时给出可读的失败说明，而不是崩', async () => {
+    const { platform, reads } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我看看。', toolCalls: [{ id: 'call_1', name: 'read_file', arguments: '不是 JSON' }] },
+      { text: '抱歉。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读一下');
+    await chat.getState().resolveToolRequest([true]);
+
+    expect(reads).toHaveLength(0);
+    const toolResult = captures[1]?.messages.find((turn) => turn.role === 'tool');
+    expect(toolResult?.content).toContain('参数不合法');
+  });
+
+  it('截图请求：工具结果只报尺寸，图片另起一条消息带进去', async () => {
+    const { platform, shots } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我看看屏幕。', toolCalls: [{ id: 'call_s', name: 'take_screenshot', arguments: '{}' }] },
+      { text: '看到了。' },
+    ]);
+    const { chat, settings } = await setup(provider, platform);
+    await settings.getState().setScreenshotEnabled(true);
+
+    await chat.getState().send('看看我的屏幕');
+    await chat.getState().resolveToolRequest([true]);
+
+    expect(shots()).toBe(1);
+
+    const second = captures[1]?.messages ?? [];
+    const toolResult = second.find((turn) => turn.role === 'tool');
+    // 工具结果只能是文本 —— 所以图片不能塞在这里
+    expect(toolResult?.content).toContain('2560×1440');
+    expect(toolResult?.content).not.toContain('base64');
+
+    // 图片以一条带附件的 user 轮次进去，模型才真的看得到
+    const imageTurn = second.filter(
+      (turn) => turn.role === 'user' && (turn.attachments ?? []).some((item) => item.kind === 'screenshot')
+    );
+    expect(imageTurn).toHaveLength(1);
+  });
+
+  it('模型连续要东西超过上限就停下，不再弹确认框', async () => {
+    const { platform } = createToolCapablePlatform();
+    // 每一轮都要一个文件
+    const { provider, captures } = createScriptedProvider([
+      { text: '再要一个。', toolCalls: [fileCall('a.md', 'call_1')] },
+      { text: '再要一个。', toolCalls: [fileCall('b.md', 'call_2')] },
+      { text: '再要一个。', toolCalls: [fileCall('c.md', 'call_3')] },
+      { text: '再要一个。', toolCalls: [fileCall('d.md', 'call_4')] },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读一堆文件');
+    for (let index = 0; index < MAX_ROUNDS_FOR_TEST; index += 1) {
+      if (!chat.getState().toolRequest) break;
+      await chat.getState().resolveToolRequest([true]);
+    }
+
+    expect(chat.getState().toolRequest).toBeNull();
+    expect(chat.getState().error).toContain('已经停下');
+    // 上限是必要的：每一轮都要用户点一次确认，没有上限的话用户会被弹到烦
+    expect(captures.length).toBeLessThanOrEqual(MAX_ROUNDS_FOR_TEST + 1);
+  });
+
+  it('等用户批准的时候不许发新消息', async () => {
+    const { platform } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我先看一下。', toolCalls: [fileCall('notes.md')] },
+      { text: '好。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('看看 notes.md');
+    expect(chat.getState().toolRequest).not.toBeNull();
+
+    await chat.getState().send('再来一条');
+
+    // 新消息插进来的话，工具结果就对不上 id 了
+    expect(captures).toHaveLength(1);
+  });
+
+  it('能力没开就不把工具给模型', async () => {
+    const { provider, captures } = createScriptedProvider([{ text: '好。' }]);
+    const { chat } = await setup(provider);
+
+    await chat.getState().send('你好');
+
+    // 浏览器模式读不了文件也截不了屏，所以一个工具都不该传
+    expect(captures[0]?.tools).toEqual([]);
   });
 });

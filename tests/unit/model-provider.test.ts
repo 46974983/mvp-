@@ -115,7 +115,7 @@ describe('streamChat', () => {
     const result = await provider.streamChat(REQUEST, (text) => seen.push(text));
 
     expect(seen.at(-1)).toBe('一二三四五');
-    expect(result).toEqual({ outcome: 'complete', text: '一二三四五' });
+    expect(result).toEqual({ outcome: 'complete', text: '一二三四五', toolCalls: [] });
   });
 
   it('chunkSize 决定分几段吐出', async () => {

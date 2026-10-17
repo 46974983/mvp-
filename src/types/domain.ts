@@ -235,11 +235,23 @@ export interface StorageLocation {
 }
 
 /** 组装给模型的一轮对话 */
+/** 模型发起的一次工具调用。arguments 是一段原始 JSON 文本，由调用方自己解析。 */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
 export interface ChatTurn {
-  role: MessageRole;
+  /** 工具结果那一轮的 role 是 tool —— 它不对应用户或助手说的任何话 */
+  role: MessageRole | 'tool';
   content: string;
   /** 这一轮带的附件。不带也合法。 */
   attachments?: ChatAttachment[];
+  /** 助手这一轮发起的工具调用 */
+  toolCalls?: ToolCall[];
+  /** 这是一条工具结果，回答的是哪一次调用。必须和前面 assistant 的 id 对上 */
+  toolCallId?: string;
 }
 
 /**
@@ -252,6 +264,13 @@ export interface ChatRequest {
   model: string;
   systemPrompt: string;
   messages: ChatTurn[];
+  /**
+   * 这次请求允许模型使用哪些工具。
+   *
+   * 空数组/不传表示不开工具调用 —— 请求体和加这个功能之前完全一样。
+   * 按「哪些能力真的开着」来决定，所以能力关着时模型连工具存在都不知道。
+   */
+  tools?: string[];
 }
 
 /** 面向用户的统一操作结果：只带一句人话，不带堆栈、不带请求头。 */
@@ -267,4 +286,11 @@ export interface StreamResult {
   outcome: StreamOutcome;
   /** 本次累计产出的完整文本（中途停止时是已生成的部分） */
   text: string;
+  /**
+   * 这一轮模型发起的工具调用。
+   *
+   * **有工具调用不代表 text 一定有内容** —— 模型可以只发调用不说话，
+   * 那种情况下 text 是空串。界面不能把「空回复」当成错误。
+   */
+  toolCalls: ToolCall[];
 }

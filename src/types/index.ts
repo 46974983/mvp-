@@ -2,6 +2,7 @@ export type {
   AppSettings,
   ChatAttachment,
   ChatRequest,
+  ToolCall,
   ChatTurn,
   Conversation,
   CredentialStorageInfo,

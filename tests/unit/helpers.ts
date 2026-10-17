@@ -50,7 +50,7 @@ export function createCapturingProvider(reply = '好的，收到。'): ModelProv
     async streamChat(input: ChatRequest, onDelta: (text: string) => void): Promise<StreamResult> {
       captures.push(input);
       onDelta(reply);
-      return { outcome: 'complete', text: reply };
+      return { outcome: 'complete', text: reply, toolCalls: [] };
     },
     abort() {
       /* 不用中断能力 */
@@ -92,7 +92,7 @@ export function createStepProvider(text: string): ModelProvider & {
         });
         if (provider.aborted) break;
       }
-      return { outcome: provider.aborted ? 'aborted' : 'complete', text: emitted };
+      return { outcome: provider.aborted ? 'aborted' : 'complete', text: emitted, toolCalls: [] };
     },
 
     abort() {

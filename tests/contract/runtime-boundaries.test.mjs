@@ -469,3 +469,123 @@ test('图片附件的门禁在 Rust 侧', () => {
     '检查要基于我们库里的模型配置，而不是前端传进来的参数'
   );
 });
+
+// ---------------------------------------------------------------------------
+// 工具调用（阶段 E）：模型能不能自己读东西
+//
+// 这一块的风险不在「读到什么」，而在「谁有权力决定读」——
+// 判断必须落在 Rust 和用户手里，不能是模型说了算。
+// ---------------------------------------------------------------------------
+
+test('模型能用的工具只有两个，且都是「读」', () => {
+  const chat = readRust('src-tauri/src/chat.rs');
+  const block = /pub fn tool_definitions\([\s\S]*?\n\}/.exec(chat);
+  assert.ok(block, '找不到 tool_definitions');
+
+  // 名字就是白名单。多一个名字就是多一类模型能主动发起的操作
+  const names = [...block[0].matchAll(/"name": "(\w+)"/g)].map((match) => match[1]);
+  assert.deepEqual(names.sort(), ['read_file', 'take_screenshot']);
+
+  // 不允许出现「写」「执行」这类工具 —— 模型能主动执行命令是另一个量级的能力
+  for (const forbidden of ['run_shell', 'execute', 'write_file', 'delete', 'run_automation']) {
+    assert.ok(
+      !block[0].includes(forbidden),
+      `工具定义里不该出现 ${forbidden}：模型能主动发起写操作是另一个量级的能力`
+    );
+  }
+});
+
+test('只提供调用方点名要的工具', () => {
+  // 能力没开时前端不会传那个名字，模型连它存在都不知道 ——
+  // 这比「先给它、执行时再拒」对用户友好
+  const chat = readRust('src-tauri/src/chat.rs');
+  assert.match(chat, /for name in names/, '要按传进来的名字逐个取');
+  assert.match(chat, /_ => continue/, '不认识的名字要跳过，不能变成可用的工具');
+});
+
+test('模型给的路径必须经过 Rust 的命令校验，前端不做安全判断', () => {
+  // 模型给的路径是**不可信输入**：它可能是绝对路径、带 ..、或者符号链接。
+  // 所以不能在前端拼一个「看起来安全」的判断就完事，
+  // 必须原样交给 read_authorized_file —— 那四道防线才是真正的边界。
+  const store = readFile('src/features/chat/store.ts');
+  const execute = /async function executeToolCalls\([\s\S]*?\n  \}/.exec(store);
+  assert.ok(execute, '找不到 executeToolCalls');
+
+  assert.match(
+    execute[0],
+    /settings\.getState\(\)\.readFile\(/,
+    '应当走已有的读取命令，而不是自己另开一条路'
+  );
+  // 前端自己「检查路径」是伪安全：真正的边界在 Rust
+  for (const forbidden of ['resolve(', 'normalize(', 'startsWith(\'/\')']) {
+    assert.ok(
+      !execute[0].includes(forbidden),
+      `前端不该自己做路径安全检查（${forbidden}）—— 那是 Rust 的职责，前端做一遍只会让人误以为这里也是边界`
+    );
+  }
+});
+
+test('工具调用的消息形状成对且 id 对得上', () => {
+  // 对不上的话服务端会直接拒绝整次请求
+  const chat = readRust('src-tauri/src/chat.rs');
+
+  const assistantCall = /"role": "assistant",[\s\S]{0,600}?"tool_calls"/.exec(chat);
+  assert.ok(assistantCall, '助手的工具调用要带 tool_calls');
+  assert.match(chat, /"role": "tool",\n?\s*"tool_call_id"/, '工具结果要带 tool_call_id');
+
+  // 只发调用不说话时 content 必须是 null —— 空字符串有些服务端不收
+  assert.match(chat, /serde_json::Value::Null/, '只发调用时 content 应当是 null');
+});
+
+test('工具循环有轮数上限', () => {
+  // 没有上限的话，模型可以一直要东西，而每一轮都要用户点一次确认 ——
+  // 用户最后会闭眼点「允许」，这个确认就白做了
+  const store = readFile('src/features/chat/store.ts');
+  assert.match(store, /const MAX_TOOL_ROUNDS = \d+/, '要有轮数上限');
+  assert.match(store, /roundsUsed >= MAX_TOOL_ROUNDS/, '超了要停下并说明');
+
+  // 上限之后要让用户知道发生了什么，而不是静默停住
+  assert.match(store, /已经停下/, '停下时要说清楚');
+});
+
+test('每次请求都要用户确认，不做「记住这次选择」', () => {
+  const store = readFile('src/features/chat/store.ts');
+  // 待批准的请求会挡住新消息：插进来的话工具结果就对不上 id 了
+  assert.match(store, /get\(\)\.toolRequest\) return/, '待批准时不该允许发新消息');
+
+  // 注释里会解释「为什么不给记住这次选择」，那不算违规 —— 先去掉注释再看代码
+  const card = readFile('src/components/chat/ToolRequestCard.tsx')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+  assert.ok(card.includes('tool-allow') && card.includes('tool-deny'), '要能逐项允许/拒绝');
+  // 不允许出现「以后都允许」这类入口
+  for (const forbidden of ['记住', '不再询问', 'alwaysAllow', 'dontAskAgain']) {
+    assert.ok(!card.includes(forbidden), `确认框里不该有「${forbidden}」：一次授权长期有效等于把开关做废了`);
+  }
+});
+
+test('拒绝也要告诉模型，不能只是静默跳过', () => {
+  // 不说清楚的话，模型会一遍遍重试同一个请求，用户看到的是「它卡住了」
+  const store = readFile('src/features/chat/store.ts');
+  assert.match(store, /用户拒绝了这次访问/, '要把拒绝作为工具结果发回去');
+});
+
+test('截图走不过工具结果那条路，图片必须单独作为消息带进去', () => {
+  // OpenAI 的 tool 消息只收文本。把 base64 塞进去，模型既看不到图，还白占一堆 token。
+  const store = readFile('src/features/chat/store.ts');
+  const execute = /async function executeToolCalls\([\s\S]*?\n  \}/.exec(store);
+  assert.ok(execute, '找不到 executeToolCalls');
+
+  assert.match(execute[0], /screenshots\.push/, '截图要单独攒起来');
+  assert.match(
+    execute[0],
+    /attachments: screenshots/,
+    '截图要以带附件的消息形式进去，模型才真的看得到'
+  );
+
+  // 工具结果里不能出现图片数据
+  assert.ok(
+    !/tool[\s\S]{0,80}dataUrl/.test(execute[0]),
+    '工具结果里不该塞图片数据'
+  );
+});
