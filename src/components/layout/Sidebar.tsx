@@ -23,7 +23,8 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
   const switchingConversation = useConversationsStore((state) => state.switchingConversation);
   const sending = useChatStore((state) => state.sending);
   const streaming = useChatStore((state) => state.streaming);
-  const busy = sending || streaming;
+  const toolRequest = useChatStore((state) => state.toolRequest);
+  const busy = sending || streaming || toolRequest !== null;
   const controlsDisabled = !conversationsLoaded || busy || switchingConversation;
 
   const driverName = useSettingsStore((state) => state.driverName);
@@ -57,6 +58,10 @@ export function Sidebar({ onRequestDelete }: SidebarProps) {
 
   async function handleSelect(id: string) {
     if (switchingConversation) return;
+    if (toolRequest) {
+      toast.info('请先处理模型的访问请求，再切换会话');
+      return;
+    }
     if (busy) {
       toast.info('正在发送或生成回复，请先停止再切换会话');
       return;

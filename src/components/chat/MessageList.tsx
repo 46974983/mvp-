@@ -21,7 +21,8 @@ export function MessageList() {
   const streamingText = useChatStore((state) => state.streamingText);
   const sending = useChatStore((state) => state.sending);
   const streaming = useChatStore((state) => state.streaming);
-  const busy = sending || streaming || switchingConversation;
+  const toolRequest = useChatStore((state) => state.toolRequest);
+  const busy = sending || streaming || toolRequest !== null || switchingConversation;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottom = useRef(true);

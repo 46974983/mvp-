@@ -25,6 +25,7 @@ export function Composer() {
 
   const streaming = useChatStore((state) => state.streaming);
   const sending = useChatStore((state) => state.sending);
+  const toolRequest = useChatStore((state) => state.toolRequest);
   const send = useChatStore((state) => state.send);
   const stop = useChatStore((state) => state.stop);
   const pendingAttachments = useChatStore((state) => state.pendingAttachments);
@@ -40,7 +41,7 @@ export function Composer() {
   const readFile = useSettingsStore((state) => state.readFile);
   const lastScreenshot = useSettingsStore((state) => state.lastScreenshot);
 
-  const busy = sending || streaming;
+  const busy = sending || streaming || toolRequest !== null;
   const inputDisabled = busy || switchingConversation;
 
   const canAttachFile = capabilities.includes('file-read') && fileAccessDirectory.length > 0;

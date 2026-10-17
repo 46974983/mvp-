@@ -7,6 +7,63 @@ import { ScreenshotSettings } from '@/components/settings/ScreenshotSettings';
 import { useChatStore, useConversationsStore, useSettingsStore } from '@/features';
 
 describe('发送准备阶段的交互', () => {
+  it('待处理模型访问请求时锁定会话切换和新建入口', () => {
+    const originalChat = useChatStore.getState();
+    const originalConversations = useConversationsStore.getState();
+    const conversation = {
+      id: 'conversation-tool',
+      title: '工具请求中的会话',
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+    };
+
+    useChatStore.setState({
+      sending: false,
+      streaming: false,
+      toolRequest: {
+        messageId: 'assistant-1',
+        text: '我先看一下。',
+        calls: [{ id: 'call-1', name: 'read_file', arguments: '{"path":"notes.md"}' }],
+      },
+    });
+    useConversationsStore.setState({
+      conversations: [conversation],
+      activeId: conversation.id,
+      messages: [],
+      loaded: true,
+    });
+
+    const onRequestDelete = vi.fn();
+    try {
+      render(<Sidebar onRequestDelete={onRequestDelete} />);
+      render(<Composer />);
+
+      expect(screen.getByTestId('new-conversation')).toBeDisabled();
+      expect(screen.getByTestId('rename-conversation')).toBeDisabled();
+      expect(screen.getByTestId('delete-conversation')).toBeDisabled();
+      expect(screen.getByTestId('composer-input')).toBeDisabled();
+    } finally {
+      useChatStore.setState({
+        sending: originalChat.sending,
+        streaming: originalChat.streaming,
+        streamingMessageId: originalChat.streamingMessageId,
+        streamingText: originalChat.streamingText,
+        error: originalChat.error,
+        lastOutcome: originalChat.lastOutcome,
+        pendingAttachments: originalChat.pendingAttachments,
+        toolRequest: originalChat.toolRequest,
+      });
+      useConversationsStore.setState({
+        conversations: originalConversations.conversations,
+        activeId: originalConversations.activeId,
+        messages: originalConversations.messages,
+        loaded: originalConversations.loaded,
+        switchingConversation: originalConversations.switchingConversation,
+      });
+    }
+  });
+
   it('显示停止按钮，并锁定会话侧栏操作', () => {
     const originalChat = useChatStore.getState();
     const originalConversations = useConversationsStore.getState();

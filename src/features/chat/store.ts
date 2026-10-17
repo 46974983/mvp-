@@ -411,6 +411,7 @@ export function createChatStore(
     await conversations.getState().reloadConversations();
 
     set({ lastOutcome: result.outcome, streamingMessageId: null, streamingText: '' });
+    currentPlaceholderId = null;
 
     if (result.outcome !== 'complete') {
       toolTurns = [];
