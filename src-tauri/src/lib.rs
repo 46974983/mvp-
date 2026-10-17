@@ -57,6 +57,32 @@ const DATABASE_FILE: &str = "assistant.db";
 /// 所以只留这一个出处，并有契约测试比对它与 tauri.conf.json 里的值。
 pub const MAIN_WINDOW_LABEL: &str = "main";
 
+fn handle_window_event(window: &tauri::WebviewWindow, event: &tauri::WindowEvent) {
+    let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+        return;
+    };
+
+    let state = window.state::<AppState>();
+    let (quitting, close_to_tray, tray_available) = (
+        state.window.is_quitting(),
+        state.window.close_to_tray(),
+        state.window.tray_available(),
+    );
+    let action = crate::window::decide_close_action(quitting, close_to_tray, tray_available);
+
+    log::info!(
+        "收到关闭请求：退出中={quitting} 缩到托盘={close_to_tray} 托盘可用={tray_available} → {action:?}"
+    );
+
+    if action == crate::window::CloseAction::HideToTray {
+        api.prevent_close();
+        match window.hide() {
+            Ok(()) => log::info!("窗口已隐藏到托盘"),
+            Err(error) => log::warn!("隐藏窗口失败：{error}"),
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -109,6 +135,15 @@ pub fn run() {
                 log::warn!("托盘不可用：关闭窗口将直接退出（藏起来会让应用失联）");
             }
 
+            // 配置文件创建的窗口也要显式绑定监听。直接在实际主窗口上注册，
+            // 避免依赖 Builder 级监听与配置窗口创建时序。
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                let listener_window = window.clone();
+                window.on_window_event(move |event| handle_window_event(&listener_window, event));
+            } else {
+                log::warn!("找不到主窗口，无法注册关闭事件监听");
+            }
+
             // 把上次设置的全局快捷键注册回来。
             // 走的是和界面改键同一条 apply 路径，所以校验和失败提示都是一致的；
             // 注册失败只记日志 —— 用户没在设置页，弹什么都看不到，
@@ -122,49 +157,6 @@ pub fn run() {
             }
 
             Ok(())
-        })
-        .on_window_event(|window, event| {
-            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
-                return;
-            };
-
-            let state = window.state::<AppState>();
-
-            let (quitting, close_to_tray, tray_available) = (
-
-                state.window.is_quitting(),
-
-                state.window.close_to_tray(),
-
-                state.window.tray_available(),
-
-            );
-
-            let action = crate::window::decide_close_action(quitting, close_to_tray, tray_available);
-
-
-            // 记一记判定结果。这一条是验收时补的：只靠「窗口有没有消失」分不清
-
-            // 「判定成退出」和「压根没收到关闭事件」—— 这两种情况的修法完全不同。
-
-            log::info!(
-
-                "收到关闭请求：退出中={quitting} 缩到托盘={close_to_tray} 托盘可用={tray_available} → {action:?}"
-
-            );
-
-            if action == crate::window::CloseAction::HideToTray {
-                // 拦下这次关闭，改成隐藏。
-                // 注意不是 minimize()：最小化还占着任务栏，用户会以为应用还开着；
-                // 隐藏才是真正的「退到托盘」。
-                api.prevent_close();
-                match window.hide() {
-                    Ok(()) => log::info!("窗口已隐藏到托盘"),
-                    // 隐藏失败时窗口保持原样 —— 这是安全的失败方向：
-                    // 用户看得见窗口，总比窗口不见了、又找不到托盘入口强
-                    Err(error) => log::warn!("隐藏窗口失败：{error}"),
-                }
-            }
         })
         .invoke_handler(tauri::generate_handler![
             // 数据位置

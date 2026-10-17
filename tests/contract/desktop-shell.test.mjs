@@ -131,7 +131,11 @@ test('前端的每个 Tauri 适配器都有对应的命令', () => {
 test('窗口关闭事件由 Rust 接管，且能区分「真退出」', () => {
   const lib = read('src-tauri/src/lib.rs');
 
-  assert.match(lib, /on_window_event/, '窗口事件应在 Rust 侧接管');
+  assert.match(
+    lib,
+    /get_webview_window\(MAIN_WINDOW_LABEL\)[\s\S]*?window\.on_window_event\(move \|event\| handle_window_event\(&listener_window, event\)\)/,
+    '必须在配置创建的主窗口实例上直接注册关闭监听'
+  );
   assert.match(lib, /CloseRequested/, '应处理窗口关闭请求');
   assert.match(lib, /prevent_close\(\)/, '需要拦下关闭才能改成隐藏');
   assert.match(lib, /is_quitting\(\)/, '必须区分「用户点了退出」和「用户点了关闭」');
