@@ -10,7 +10,13 @@
  *   - 系统提示词与用户消息在 ChatRequest 里是两个字段，不混在一起。
  */
 
-import type { ChatRequest, ModelConfig, OperationResult, StreamResult } from '@/types';
+import type {
+  ChatRequest,
+  ModelConfig,
+  OperationResult,
+  PendingToolCall,
+  StreamResult,
+} from '@/types';
 
 export interface ModelProvider {
   /** 实现标识，展示在设置页，让用户知道「现在到底是谁在回答」 */
@@ -26,8 +32,16 @@ export interface ModelProvider {
    * 流式对话。每产出一段文本调用一次 onDelta。
    * onDelta 收到的是「累计至今的完整文本」，不是增量片段 —— 界面直接覆盖渲染即可，
    * 不用自己维护拼接状态。
+   *
+   * `onToolProgress` 是可选的第 3 个回调：模型正在准备工具调用时，
+   * 会带着「当前已收到的调用清单」被反复调用，供界面显示进度。
+   * 不传它也不会漏掉任何东西 —— 完整的调用在 `StreamResult.toolCalls` 里。
    */
-  streamChat(input: ChatRequest, onDelta: (text: string) => void): Promise<StreamResult>;
+  streamChat(
+    input: ChatRequest,
+    onDelta: (text: string) => void,
+    onToolProgress?: (calls: PendingToolCall[]) => void
+  ): Promise<StreamResult>;
 
   /** 中断当前流式调用。已生成的内容由调用方保留。 */
   abort(): void;

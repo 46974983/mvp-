@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createChatStore } from '@/features/chat/store';
 import { createConversationsStore } from '@/features/conversations/store';
 import { createSettingsStore } from '@/features/settings/store';
@@ -936,5 +936,183 @@ describe('模型要求访问内容', () => {
 
     // 浏览器模式读不了文件也截不了屏，所以一个工具都不该传
     expect(captures[0]?.tools).toEqual([]);
+  });
+});
+
+describe('工具调用的进度、部分成功与取消', () => {
+  it('模型攒工具调用时把进度推给界面，收尾后清空', async () => {
+    const { platform } = createToolCapablePlatform();
+    const seen: number[] = [];
+
+    // 一个会推两次进度的 provider
+    const provider: ModelProvider = {
+      id: 'progressing',
+      label: '会推进度的 provider',
+      performsNetworkRequest: false,
+      async testConnection() {
+        return { ok: true, message: 'ok' };
+      },
+      async streamChat(_input, onDelta, onToolProgress) {
+        onDelta('我先看一下。');
+        onToolProgress?.([{ index: 0, name: 'read_file', argumentChars: 0 }]);
+        onToolProgress?.([{ index: 0, name: 'read_file', argumentChars: 12 }]);
+        seen.push(1);
+        return {
+          outcome: 'complete',
+          text: '我先看一下。',
+          toolCalls: [fileCall('notes.md')],
+        };
+      },
+      abort() {
+        /* 不用 */
+      },
+    };
+
+    const { chat } = await setup(provider, platform);
+    await chat.getState().send('看看');
+
+    // 那几秒里界面本来只有一个光标 —— 现在至少有「它在要东西」这件事可见
+    expect(seen).toHaveLength(1);
+    // 这一轮结束之后不能再显示「正在准备」
+    expect(chat.getState().toolProgress).toEqual([]);
+    expect(chat.getState().toolRequest).not.toBeNull();
+  });
+
+  it('一个成功一个失败时逐项记下来，两边结果都发回模型', async () => {
+    const { platform } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      {
+        text: '我读这两个。',
+        toolCalls: [fileCall('notes.md', 'call_ok'), fileCall('../secret.txt', 'call_bad')],
+      },
+      { text: '一个读到了，另一个不行。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读两个文件');
+    await chat.getState().resolveToolRequest([true, true]);
+
+    const outcome = chat.getState().toolOutcome;
+    expect(outcome).toHaveLength(2);
+    expect(outcome?.[0]?.ok).toBe(true);
+    expect(outcome?.[1]?.ok).toBe(false);
+    // 失败原因要用户也看得到，不能只发回给模型
+    expect(outcome?.[1]?.detail).toContain('超出');
+
+    // 但两条工具结果都要发回模型 —— 缺一条它就以为另一个也失败了，会去重试
+    const toolTurns = (captures[1]?.messages ?? []).filter((turn) => turn.role === 'tool');
+    expect(toolTurns).toHaveLength(2);
+    expect(toolTurns[0]?.content).toContain('内容:notes.md');
+    expect(toolTurns[1]?.content).toContain('读取失败');
+  });
+
+  it('执行期间点停止就不再往下做，也不发下一轮请求', async () => {
+    let release!: () => void;
+    const base = createToolCapablePlatform();
+    const platform: PlatformService = {
+      ...base.platform,
+      readFile: async (relativePath: string) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { relativePath, content: 'x', bytes: 1, truncated: false };
+      },
+    };
+
+    const { provider, captures } = createScriptedProvider([
+      {
+        text: '我读这两个。',
+        toolCalls: [fileCall('a.md', 'call_1'), fileCall('b.md', 'call_2')],
+      },
+      { text: '不该走到这里。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读两个');
+    const running = chat.getState().resolveToolRequest([true, true]);
+
+    // 等第一个读开始，然后按停止
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    chat.getState().stop();
+    release();
+    await running;
+
+    const outcome = chat.getState().toolOutcome;
+    expect(outcome?.[1]?.detail).toBe('已取消');
+    // 用户既然按了停止，就不该再替他发一轮请求
+    expect(captures).toHaveLength(1);
+    expect(chat.getState().lastOutcome).toBe('aborted');
+  });
+
+  it('读取超时会给出一条明确的工具结果，而不是一直等下去', async () => {
+    const base = createToolCapablePlatform();
+    const platform: PlatformService = {
+      ...base.platform,
+      // 永远不返回
+      readFile: () => new Promise(() => undefined),
+    };
+
+    const { provider, captures } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('slow.md')] },
+      { text: '读不到。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读一个很大的文件');
+
+    vi.useFakeTimers();
+    try {
+      const running = chat.getState().resolveToolRequest([true]);
+      await vi.advanceTimersByTimeAsync(16_000);
+      await running;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const outcome = chat.getState().toolOutcome;
+    expect(outcome?.[0]?.ok).toBe(false);
+    expect(outcome?.[0]?.detail).toContain('秒');
+
+    // 超时也必须有工具结果：否则模型会一直等着，或者在下一轮重新请求
+    const toolTurns = (captures[1]?.messages ?? []).filter((turn) => turn.role === 'tool');
+    expect(toolTurns).toHaveLength(1);
+    expect(toolTurns[0]?.content).toContain('失败');
+  });
+
+  it('会话一换，待处理的请求和结果都复位', async () => {
+    const { platform } = createToolCapablePlatform();
+    const { provider } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('notes.md')] },
+      { text: '好。' },
+    ]);
+    const { chat, conversations } = await setup(provider, platform);
+
+    await chat.getState().send('读一下');
+    expect(chat.getState().toolRequest).not.toBeNull();
+
+    // 正常路径上界面上不让切，但删除会话、重置数据绕不过去
+    const created = await conversations.getState().createConversation();
+    conversations.setState({ activeId: created.id });
+
+    expect(chat.getState().toolRequest).toBeNull();
+    expect(chat.getState().toolProgress).toEqual([]);
+    expect(chat.getState().toolOutcome).toBeNull();
+  });
+
+  it('上一轮的执行结果不会挂在这一轮上', async () => {
+    const { platform } = createToolCapablePlatform();
+    const { provider } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('notes.md')] },
+      { text: '读完了。' },
+      { text: '这是新的一轮。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读一下');
+    await chat.getState().resolveToolRequest([true]);
+    expect(chat.getState().toolOutcome).not.toBeNull();
+
+    await chat.getState().send('新问题');
+    expect(chat.getState().toolOutcome).toBeNull();
   });
 });

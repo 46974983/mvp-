@@ -21,8 +21,8 @@ export { createConversationsStore } from './conversations/store';
 export { createSettingsStore, DEFAULT_MODEL_CONFIG } from './settings/store';
 export { personaSchema, validatePersona } from './settings/schema';
 export type { PersonaForm } from './settings/schema';
-export type { ChatState, ToolRequest } from './chat/store';
-export type { ChatAttachment, ToolCall } from '@/types';
+export type { ChatState, ToolOutcomeItem, ToolRequest } from './chat/store';
+export type { ChatAttachment, PendingToolCall, ToolCall } from '@/types';
 export type { ConversationsState } from './conversations/store';
 export type { SettingsState } from './settings/store';
 

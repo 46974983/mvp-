@@ -144,6 +144,23 @@ pub struct ChatRequest {
 pub enum StreamEvent {
     /// 累计至今的完整文本（不是增量片段），前端直接覆盖渲染即可
     Delta { text: String },
+    /// 模型正在准备工具调用。
+    ///
+    /// 推的是**当前已收到的调用清单**，不是单个碎片 —— 前端直接覆盖渲染。
+    /// 参数本身不推（半截 JSON 显示出来只是乱码），只推已经收到多少字符，
+    /// 够界面上表达「它还在往下传」了。
+    ToolCall { calls: Vec<PendingToolCall> },
+}
+
+/// 一个「还在准备中」的工具调用
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingToolCall {
+    pub index: usize,
+    /// 名字可能还没到（第一片通常带，但不是所有服务端都这样）
+    pub name: String,
+    /// 参数已经收到多少个字符 —— 用来表达「还在传」
+    pub argument_chars: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -486,6 +503,24 @@ impl ToolCallAccumulator {
             name: delta.name.clone().unwrap_or_default(),
             arguments: delta.arguments.clone().unwrap_or_default(),
         });
+    }
+
+    /// 当前的「准备中」快照，给界面显示进度用。
+    ///
+    /// 名字还没到的调用不算 —— 报一个没有名字的条目，界面上只能写「未知操作」。
+    pub fn pending(&self) -> Vec<PendingToolCall> {
+        let mut calls = self.calls.clone();
+        calls.sort_by_key(|call| call.index);
+
+        calls
+            .into_iter()
+            .filter(|call| !call.name.is_empty())
+            .map(|call| PendingToolCall {
+                index: call.index,
+                name: call.name,
+                argument_chars: call.arguments.chars().count(),
+            })
+            .collect()
     }
 
     /// 收尾成一串完整调用。
@@ -884,9 +919,15 @@ fn apply_sse_line(
 ) -> bool {
     match line {
         SseLine::ToolCall(delta) => {
-            // 工具调用**不推给前端**：它要等整段参数收完才有意义，
-            // 半截 JSON 推上去只会让界面显示一堆乱码。整段在收尾时一起返回。
             tool_calls.push(&delta);
+
+            // 推「已收到的调用清单」，不推参数内容：
+            // 半截 JSON 显示出来只是乱码，但「收到了多少个字符」有意义 ——
+            // 它让界面能表达「它还在往下传」，而不是让人干等一个光标。
+            let snapshot = tool_calls.pending();
+            if !snapshot.is_empty() {
+                let _ = on_event.send(StreamEvent::ToolCall { calls: snapshot });
+            }
             false
         }
         SseLine::Delta(text) => {
@@ -1560,5 +1601,70 @@ mod tests {
         assert_eq!(last["role"], "tool");
         assert_eq!(last["tool_call_id"], "call_1");
         assert_eq!(last["content"], "文件内容");
+    }
+
+    #[test]
+    fn pending_reports_progress_without_exposing_arguments() {
+        // 界面上要能说「它还在往下传」，但半截 JSON 显示出来只是乱码
+        let mut accumulator = ToolCallAccumulator::default();
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: Some("c1".into()),
+            name: Some("read_file".into()),
+            arguments: Some("{\"path\"".into()),
+        });
+
+        let pending = accumulator.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].name, "read_file");
+        assert_eq!(pending[0].argument_chars, 7);
+    }
+
+    #[test]
+    fn pending_skips_calls_without_a_name_yet() {
+        // 名字还没到的调用，界面上只能写「未知操作」—— 不如先不报
+        let mut accumulator = ToolCallAccumulator::default();
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: Some("c1".into()),
+            name: None,
+            arguments: Some("{".into()),
+        });
+
+        assert!(accumulator.pending().is_empty());
+    }
+
+    #[test]
+    fn pending_grows_as_arguments_stream_in() {
+        let mut accumulator = ToolCallAccumulator::default();
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: None,
+            name: Some("take_screenshot".into()),
+            arguments: Some(String::new()),
+        });
+        assert_eq!(accumulator.pending()[0].argument_chars, 0);
+
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: None,
+            name: None,
+            arguments: Some("{}".into()),
+        });
+        assert_eq!(accumulator.pending()[0].argument_chars, 2);
+    }
+
+    #[test]
+    fn pending_counts_characters_not_bytes() {
+        // 路径里有中文时，按字节算会让界面上的数字跳得莫名其妙
+        let mut accumulator = ToolCallAccumulator::default();
+        accumulator.push(&ToolCallDelta {
+            index: 0,
+            id: None,
+            name: Some("read_file".into()),
+            arguments: Some("笔记".into()),
+        });
+
+        assert_eq!(accumulator.pending()[0].argument_chars, 2);
     }
 }

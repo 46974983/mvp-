@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { useChatStore } from '@/features';
 import { MessageList } from './MessageList';
 import { Composer } from './Composer';
-import { ToolRequestCard } from './ToolRequestCard';
+import { ToolActivityCard } from './ToolActivityCard';
 
 export function ChatPanel() {
   const error = useChatStore((state) => state.error);
@@ -28,7 +28,7 @@ export function ChatPanel() {
       <MessageList />
       {/* 模型要求访问内容时，确认框排在输入区正上方 ——
           它是一次「必须先做的决定」，不该被滚动到看不见的地方 */}
-      <ToolRequestCard />
+      <ToolActivityCard />
       <Composer />
     </main>
   );

@@ -57,6 +57,18 @@ const readRust = (suffix) => {
 
 const readFile = (relative) => fs.readFileSync(path.join(ROOT, relative), 'utf8');
 
+/**
+ * 从某个函数头开始截一段源码。
+ *
+ * **不按括号配对截**：这些函数的返回类型里有 `}`（比如 `Promise<{ ... }>`），
+ * 配对会在签名结束处就提前收工，后面的实现根本没被检查到。
+ */
+function sliceFrom(source, header, length = 5000) {
+  const at = source.indexOf(header);
+  return at < 0 ? null : source.slice(at, at + length);
+}
+
+
 // ---------------------------------------------------------------------------
 // 1. 网络出口：前端零出网，Rust 侧只有两个端点
 // ---------------------------------------------------------------------------
@@ -508,18 +520,18 @@ test('模型给的路径必须经过 Rust 的命令校验，前端不做安全�
   // 所以不能在前端拼一个「看起来安全」的判断就完事，
   // 必须原样交给 read_authorized_file —— 那四道防线才是真正的边界。
   const store = readFile('src/features/chat/store.ts');
-  const execute = /async function executeToolCalls\([\s\S]*?\n  \}/.exec(store);
+  const execute = sliceFrom(store, 'async function executeToolCalls(');
   assert.ok(execute, '找不到 executeToolCalls');
 
   assert.match(
-    execute[0],
+    execute,
     /settings\.getState\(\)\.readFile\(/,
     '应当走已有的读取命令，而不是自己另开一条路'
   );
   // 前端自己「检查路径」是伪安全：真正的边界在 Rust
   for (const forbidden of ['resolve(', 'normalize(', 'startsWith(\'/\')']) {
     assert.ok(
-      !execute[0].includes(forbidden),
+      !execute.includes(forbidden),
       `前端不该自己做路径安全检查（${forbidden}）—— 那是 Rust 的职责，前端做一遍只会让人误以为这里也是边界`
     );
   }
@@ -554,7 +566,7 @@ test('每次请求都要用户确认，不做「记住这次选择」', () => {
   assert.match(store, /get\(\)\.toolRequest\) return/, '待批准时不该允许发新消息');
 
   // 注释里会解释「为什么不给记住这次选择」，那不算违规 —— 先去掉注释再看代码
-  const card = readFile('src/components/chat/ToolRequestCard.tsx')
+  const card = readFile('src/components/chat/ToolActivityCard.tsx')
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/\/\/[^\n]*/g, '');
   assert.ok(card.includes('tool-allow') && card.includes('tool-deny'), '要能逐项允许/拒绝');
@@ -573,19 +585,111 @@ test('拒绝也要告诉模型，不能只是静默跳过', () => {
 test('截图走不过工具结果那条路，图片必须单独作为消息带进去', () => {
   // OpenAI 的 tool 消息只收文本。把 base64 塞进去，模型既看不到图，还白占一堆 token。
   const store = readFile('src/features/chat/store.ts');
-  const execute = /async function executeToolCalls\([\s\S]*?\n  \}/.exec(store);
+  const execute = sliceFrom(store, 'async function executeToolCalls(');
   assert.ok(execute, '找不到 executeToolCalls');
 
-  assert.match(execute[0], /screenshots\.push/, '截图要单独攒起来');
+  assert.match(execute, /screenshots\.push/, '截图要单独攒起来');
   assert.match(
-    execute[0],
+    execute,
     /attachments: screenshots/,
     '截图要以带附件的消息形式进去，模型才真的看得到'
   );
 
   // 工具结果里不能出现图片数据
   assert.ok(
-    !/tool[\s\S]{0,80}dataUrl/.test(execute[0]),
+    !/tool[\s\S]{0,80}dataUrl/.test(execute),
     '工具结果里不该塞图片数据'
   );
+});
+
+// ---------------------------------------------------------------------------
+// 工具调用的体验（阶段 E 第二步）
+//
+// 这一组守的是「用户看不看得见发生了什么」——
+// 功能能跑通但过程不透明，用户就只能靠猜。
+// ---------------------------------------------------------------------------
+
+test('工具调用的进度是「已收到的清单」，不是原始碎片', () => {
+  const chat = readRust('src-tauri/src/chat.rs');
+
+  assert.match(chat, /ToolCall \{ calls: Vec<PendingToolCall> \}/, '要有一个推给界面的进度事件');
+  assert.match(chat, /pub struct PendingToolCall/, '要有一个专门给界面用的结构');
+  assert.match(chat, /tool_calls\.pending\(\)/, '推的是累积后的快照，不是单个碎片');
+
+  // **参数内容不许推**：半截 JSON 显示出来只是乱码
+  assert.match(
+    chat,
+    /pub struct PendingToolCall \{[\s\S]*?argument_chars/,
+    '只推参数字符数，不推参数内容'
+  );
+  assert.ok(
+    !/pub struct PendingToolCall \{[\s\S]{0,300}?arguments: String/.test(chat),
+    'PendingToolCall 里不该有 arguments 字段：半截 JSON 显示出来只是乱码'
+  );
+});
+
+test('每个工具调用都有超时，且超时也是一条工具结果', () => {
+  const store = readFile('src/features/chat/store.ts');
+
+  assert.match(store, /const TOOL_TIMEOUT_MS = \d+/, '要有超时常量');
+  // 读文件和截图都要走超时包装
+  assert.match(store, /withToolTimeout\(settings\.getState\(\)\.readFile/, '读文件要有超时');
+  assert.match(store, /withToolTimeout\(settings\.getState\(\)\.takeScreenshot/, '截图要有超时');
+
+  // 超时要变成一条工具结果 —— 否则模型会以为事情还在进行
+  const execute = sliceFrom(store, 'async function executeToolCalls(');
+  assert.ok(execute, '找不到 executeToolCalls');
+  assert.match(
+    execute,
+    /catch \(cause\)[\s\S]{0,400}?role: 'tool'/,
+    '超时/失败都要整理成工具结果发回去'
+  );
+});
+
+test('执行期间可以取消，取消后不再发下一轮请求', () => {
+  const store = readFile('src/features/chat/store.ts');
+
+  const execute = sliceFrom(store, 'async function executeToolCalls(');
+  assert.ok(execute, '找不到 executeToolCalls');
+  assert.match(execute, /if \(cancelRequested\)/, '每个调用之前都要检查取消标志');
+
+  // 它是 store 对象上的方法，不是独立的函数声明
+  const resolve = sliceFrom(store, 'async resolveToolRequest(approvals)');
+  assert.ok(resolve, '找不到 resolveToolRequest');
+  assert.match(
+    resolve,
+    /outcome\.cancelled|\(outcome\.cancelled \|\| cancelRequested\)/,
+    '取消之后不该再发一轮请求'
+  );
+});
+
+test('部分成功：逐项记录，且完整结果都发回模型', () => {
+  const store = readFile('src/features/chat/store.ts');
+  const execute = sliceFrom(store, 'async function executeToolCalls(');
+  assert.ok(execute, '找不到 executeToolCalls');
+
+  // 每个分支都要 push 一条 items，界面上才说得清「哪一项失败、为什么」
+  const pushes = [...execute.matchAll(/items\.push\(/g)].length;
+  assert.ok(pushes >= 5, `每个失败路径都要记一条结果，现在只有 ${pushes} 处`);
+
+  // 失败不中断循环：一个挂了不能影响后面的（否则模型会以为另一个也失败了）
+  assert.ok(
+    !/catch \(cause\) \{\s*turns\.push\([\s\S]{0,200}?break;/.test(execute),
+    '一个调用失败不该 break —— 后面的调用还要照常执行'
+  );
+});
+
+test('三种工具状态在界面上互斥，且各自说清了在做什么', () => {
+  const card = readFile('src/components/chat/ToolActivityCard.tsx');
+
+  // 准备中 / 待确认 / 结果，三张卡占同一块位置，一次只显示一种
+  for (const testId of ['tool-progress', 'tool-request', 'tool-outcome']) {
+    assert.ok(card.includes(testId), `缺少 ${testId}`);
+  }
+  assert.match(card, /if \(progress\.length > 0\)[\s\S]{0,200}?return/, '准备中最先判断');
+
+  // 用户要能看出「它在准备」而不是「它卡住了」
+  assert.ok(card.includes('正在准备访问请求'), '要说清正在做什么');
+  // 失败原因要给用户看，不能只发回给模型
+  assert.ok(card.includes('item.detail'), '结果卡片要显示失败原因');
 });

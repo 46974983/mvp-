@@ -18,6 +18,15 @@ describe('发送准备阶段的交互', () => {
       archived: false,
     };
 
+    // 顺序有讲究：chat store 订阅了会话的 activeId，会话一换就把待处理的
+    // 工具请求复位掉（那是兜底，正常路径是界面上不让切）。
+    // 所以先摆好会话，再挂上待处理请求。
+    useConversationsStore.setState({
+      conversations: [conversation],
+      activeId: conversation.id,
+      messages: [],
+      loaded: true,
+    });
     useChatStore.setState({
       sending: false,
       streaming: false,
@@ -26,12 +35,6 @@ describe('发送准备阶段的交互', () => {
         text: '我先看一下。',
         calls: [{ id: 'call-1', name: 'read_file', arguments: '{"path":"notes.md"}' }],
       },
-    });
-    useConversationsStore.setState({
-      conversations: [conversation],
-      activeId: conversation.id,
-      messages: [],
-      loaded: true,
     });
 
     const onRequestDelete = vi.fn();

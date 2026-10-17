@@ -13,7 +13,14 @@
  */
 
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
-import type { ChatAttachment, ChatRequest, ChatTurn, StreamOutcome, ToolCall } from '@/types';
+import type {
+  ChatAttachment,
+  ChatRequest,
+  ChatTurn,
+  PendingToolCall,
+  StreamOutcome,
+  ToolCall,
+} from '@/types';
 import type { Services } from '@/services/container';
 import { createLogger, toUserFacingError } from '@/lib/log';
 import { summarizeForNotification } from '@/lib/text';
@@ -35,6 +42,38 @@ const MAX_HISTORY_TURNS = 40;
  * 没有上限的话，用户会被弹到烦，最后闭眼点允许。
  */
 const MAX_TOOL_ROUNDS = 3;
+
+/**
+ * 单个工具调用的超时。
+ *
+ * 读文件和截图都是本地操作，这么久还没回来基本就是卡住了。
+ * 超时后必须**给模型一条明确的工具结果** —— 否则它会以为事情还在进行，
+ * 一直等着或在下一轮重新请求。
+ */
+const TOOL_TIMEOUT_MS = 15_000;
+
+/**
+ * 给一个承诺加超时。
+ *
+ * 注意：**这只是不再等它**，底层操作可能还在跑（Rust 侧的读取/截屏没有中断点）。
+ * 这在这里是可以接受的：读一个文件、抓一张屏都是一次性的，不会有后续副作用。
+ */
+async function withToolTimeout<T>(work: Promise<T>, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${what}超过 ${TOOL_TIMEOUT_MS / 1000} 秒还没有结果，已放弃等待。`)),
+          TOOL_TIMEOUT_MS
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export interface ChatState {
   /** 已开始一轮发送，但占位消息还没落库时也要算忙碌 */
@@ -61,6 +100,20 @@ export interface ChatState {
    * 它还在的时候不许发新消息：那一轮的上下文会被插进来，工具结果就对不上了。
    */
   toolRequest: ToolRequest | null;
+  /**
+   * 模型正在准备中的工具调用，用来显示进度。
+   *
+   * 模型可能在说完一句话之后才开始攒工具调用，那几秒里界面本来只有一个光标 ——
+   * 这个列表让「它正在要东西」这件事可见。
+   */
+  toolProgress: PendingToolCall[];
+  /**
+   * 上一次工具执行的结果，逐项列出成功/失败。
+   *
+   * 存在的理由：失败原因要**用户也看得到**，不能只发回给模型。
+   * 否则一个文件读失败、另一个成功时，用户只看到一句含糊的最终回答。
+   */
+  toolOutcome: ToolOutcomeItem[] | null;
 
   send(text: string): Promise<void>;
   /**
@@ -76,6 +129,15 @@ export interface ChatState {
   clearAttachments(): void;
   stop(): void;
   clearError(): void;
+}
+
+/** 一个工具调用的执行结果，给界面显示用 */
+export interface ToolOutcomeItem {
+  /** 人话描述：「读取「notes.md」」 */
+  label: string;
+  ok: boolean;
+  /** 失败原因，或者「已读取」这类简短结论 */
+  detail: string;
 }
 
 /** 一次等待用户批准的访问请求 */
@@ -153,7 +215,7 @@ export function createChatStore(
     }
   }
 
-  return create<ChatState>((set, get) => {
+  const store = create<ChatState>((set, get) => {
   // -------------------------------------------------------------------------
   // 工具调用（阶段 E）
   // -------------------------------------------------------------------------
@@ -204,15 +266,60 @@ export function createChatStore(
    * 模型给的路径是不可信输入，但它是通过那条命令读的，
    * 四道防线（绝对路径、`..`、符号链接、前缀比对）一道都不会少。
    */
+  /** 一个调用在界面上叫什么。用户看的是「读了哪个文件」，不是工具名。 */
+  function describeCall(call: ToolCall): string {
+    if (call.name === 'read_file') {
+      const path = readPathArgument(call.arguments);
+      return path ? `读取「${path}」` : '读取文件';
+    }
+    if (call.name === 'take_screenshot') return '抓一张屏幕截图';
+    return `未知操作「${call.name}」`;
+  }
+
+  /**
+   * 执行用户批准的访问请求，把结果整理成要发回模型的轮次。
+   *
+   * 注意这里**不做任何路径安全检查** —— 检查在 Rust 的 `read_authorized_file` 里。
+   * 模型给的路径是不可信输入，但它是通过那条命令读的，
+   * 四道防线（绝对路径、`..`、符号链接、前缀比对）一道都不会少。
+   *
+   * 三个都要照顾到的地方：
+   *   1. **一个失败不影响别的**：逐个执行、逐个记结果，最后一起发回模型。
+   *      中途中断会让模型以为「另一个也失败了」，它就会去重试。
+   *   2. **每个调用都要有结果**：协议要求 tool_call 全部被回答，
+   *      哪怕结果是「用户拒绝了」「超时了」。
+   *   3. **执行期间可以取消**：用户点了停止就不再动下一个。
+   */
   async function executeToolCalls(
     calls: ToolCall[],
     approvals: boolean[]
-  ): Promise<{ turns: ChatTurn[]; attachments: ChatAttachment[] }> {
+  ): Promise<{
+    turns: ChatTurn[];
+    attachments: ChatAttachment[];
+    items: ToolOutcomeItem[];
+    cancelled: boolean;
+  }> {
     const turns: ChatTurn[] = [];
     const attachments: ChatAttachment[] = [];
+    const items: ToolOutcomeItem[] = [];
     const screenshots: ChatAttachment[] = [];
+    let cancelled = false;
 
     for (const [index, call] of calls.entries()) {
+      const label = describeCall(call);
+
+      // 用户在执行期间点了停止：剩下的不再动，但每个调用仍要有结果
+      if (cancelRequested) {
+        cancelled = true;
+        turns.push({
+          role: 'tool',
+          content: '用户取消了这个动作，没有执行。',
+          toolCallId: call.id,
+        });
+        items.push({ label, ok: false, detail: '已取消' });
+        continue;
+      }
+
       // 没明确说「不允许」的都算允许：默认值在界面上是全选中的
       const allowed = approvals[index] !== false;
 
@@ -222,22 +329,21 @@ export function createChatStore(
           content: '用户拒绝了这次访问。不要重复请求同一个东西，改用用户已经提供的信息回答。',
           toolCallId: call.id,
         });
+        items.push({ label, ok: false, detail: '你没有允许' });
         continue;
       }
 
       if (call.name === 'read_file') {
         const path = readPathArgument(call.arguments);
         if (!path) {
-          turns.push({
-            role: 'tool',
-            content: '参数不合法：没有给出 path，或者 path 不是字符串。',
-            toolCallId: call.id,
-          });
+          const detail = '参数不合法：没有给出 path';
+          turns.push({ role: 'tool', content: `${detail}，或者 path 不是字符串。`, toolCallId: call.id });
+          items.push({ label, ok: false, detail });
           continue;
         }
 
         try {
-          const file = await settings.getState().readFile(path);
+          const file = await withToolTimeout(settings.getState().readFile(path), '读取这个文件');
           attachments.push({
             kind: 'file',
             name: baseName(path),
@@ -253,19 +359,22 @@ export function createChatStore(
               (file.truncated ? '\n（以上只是这个文件的开头部分，内容较长已被截断）' : ''),
             toolCallId: call.id,
           });
-        } catch (cause) {
-          turns.push({
-            role: 'tool',
-            content: `读取失败：${toUserFacingError(cause, '读取这个文件时出错了。')}`,
-            toolCallId: call.id,
+          items.push({
+            label,
+            ok: true,
+            detail: file.truncated ? `已读取（内容较长，只取了开头）` : '已读取',
           });
+        } catch (cause) {
+          const detail = toUserFacingError(cause, '读取这个文件时出错了。');
+          turns.push({ role: 'tool', content: `读取失败：${detail}`, toolCallId: call.id });
+          items.push({ label, ok: false, detail });
         }
         continue;
       }
 
       if (call.name === 'take_screenshot') {
         try {
-          const shot = await settings.getState().takeScreenshot();
+          const shot = await withToolTimeout(settings.getState().takeScreenshot(), '抓取屏幕');
           const attachment: ChatAttachment = {
             kind: 'screenshot',
             name: `屏幕截图 ${shot.width}×${shot.height}`,
@@ -282,12 +391,11 @@ export function createChatStore(
             content: `已抓取一张 ${shot.width}×${shot.height} 的屏幕截图，图片作为下一条消息附上。`,
             toolCallId: call.id,
           });
+          items.push({ label, ok: true, detail: `${shot.width}×${shot.height}` });
         } catch (cause) {
-          turns.push({
-            role: 'tool',
-            content: `截屏失败：${toUserFacingError(cause, '抓取屏幕时出错了。')}`,
-            toolCallId: call.id,
-          });
+          const detail = toUserFacingError(cause, '抓取屏幕时出错了。');
+          turns.push({ role: 'tool', content: `截屏失败：${detail}`, toolCallId: call.id });
+          items.push({ label, ok: false, detail });
         }
         continue;
       }
@@ -297,6 +405,7 @@ export function createChatStore(
         content: `不支持的工具：${call.name}。`,
         toolCallId: call.id,
       });
+      items.push({ label, ok: false, detail: '这个操作不被支持' });
     }
 
     // 截图必须以「一条带图片的消息」的形式进去，不能塞进工具结果里。
@@ -310,7 +419,7 @@ export function createChatStore(
       attachments.push(...screenshots);
     }
 
-    return { turns, attachments };
+    return { turns, attachments, items, cancelled };
   }
 
   /**
@@ -395,11 +504,19 @@ export function createChatStore(
       return writeChain;
     };
 
-    const result = await services.model.streamChat(request, (accumulated) => {
-      buffer = accumulated;
-      set({ streamingText: accumulated });
-      void persist(false);
-    });
+    const result = await services.model.streamChat(
+      request,
+      (accumulated) => {
+        buffer = accumulated;
+        set({ streamingText: accumulated });
+        void persist(false);
+      },
+      // 模型在攒工具调用时把进度推出来：那几秒里界面本来只有一个光标
+      (calls) => set({ toolProgress: calls })
+    );
+
+    // 这一轮结束了，进度不再是「正在准备」
+    set({ toolProgress: [] });
 
     // 收尾：把最终文本和状态一次性写实
     await persist(true);
@@ -452,7 +569,7 @@ export function createChatStore(
 
     const message = toUserFacingError(error, fallback);
     toolTurns = [];
-    set({ error: message, toolRequest: null });
+    set({ error: message, toolRequest: null, toolProgress: [] });
 
     await notifyReplyFinished(message);
   }
@@ -466,6 +583,8 @@ export function createChatStore(
     lastOutcome: null,
     pendingAttachments: [],
     toolRequest: null,
+    toolProgress: [],
+    toolOutcome: null,
 
     attach(attachment) {
       // 同一种附件重复挂上去没有意义（尤其是截图，同一张挂两次纯属浪费），
@@ -505,6 +624,9 @@ export function createChatStore(
         streamingMessageId: null,
         streamingText: '',
         toolRequest: null,
+        toolProgress: [],
+        // 上一次的工具执行结果只在「这一轮」有意义，新消息一来就该消失
+        toolOutcome: null,
         // 附件从「待发送」挪进消息里，这一步之后它们归消息所有。
         // 在这里就清空，而不是等发送成功 —— 否则用户在网络往返期间
         // 能看到同一份附件既是待发送、又已经进了消息。
@@ -565,6 +687,17 @@ export function createChatStore(
       try {
         const outcome = await executeToolCalls(request.calls, approvals);
 
+        // 逐项摆出来：一个成功一个失败时，用户要能看出是哪一项、为什么
+        set({ toolOutcome: outcome.items });
+
+        // 用户在执行期间点了停止：不发下一轮请求了。
+        // 但**工具结果仍然要整理完整**（上面已经做了），这样协议形状不会缺一块。
+        if (outcome.cancelled || cancelRequested) {
+          toolTurns = [];
+          set({ lastOutcome: 'aborted' });
+          return;
+        }
+
         // 模型的「工具调用」那条消息在这一轮里只是协议的一部分，
         // 它已经作为一条普通消息落过库了（内容是它说的话）。
         // 这里把它补回成带 tool_calls 的形状再发回去。
@@ -602,4 +735,18 @@ export function createChatStore(
     },
     };
   });
+
+  /**
+   * 兜底复位：会话一换，这一轮的工具状态就没有意义了。
+   *
+   * 正常路径是界面上不让切（待确认时侧边栏是禁用的），
+   * 但删除会话、重置数据、从别处改 activeId 这些绕不过去 ——
+   * 状态留着的话，下一次提问会带着一个不属于本会话的确认框。
+   */
+  conversations.subscribe((state, previous) => {
+    if (state.activeId === previous.activeId) return;
+    store.setState({ toolRequest: null, toolProgress: [], toolOutcome: null });
+  });
+
+  return store;
 }

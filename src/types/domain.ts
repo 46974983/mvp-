@@ -235,6 +235,19 @@ export interface StorageLocation {
 }
 
 /** 组装给模型的一轮对话 */
+/**
+ * 一个「还在准备中」的工具调用 —— 只用于界面显示进度。
+ *
+ * 参数内容不进来：半截 JSON 显示出来只是乱码，而「已经收到多少字符」
+ * 足够表达「它还在往下传」。
+ */
+export interface PendingToolCall {
+  index: number;
+  /** 名字可能还没到 */
+  name: string;
+  argumentChars: number;
+}
+
 /** 模型发起的一次工具调用。arguments 是一段原始 JSON 文本，由调用方自己解析。 */
 export interface ToolCall {
   id: string;

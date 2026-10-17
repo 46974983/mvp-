@@ -3,6 +3,7 @@ export type {
   ChatAttachment,
   ChatRequest,
   ToolCall,
+  PendingToolCall,
   ChatTurn,
   Conversation,
   CredentialStorageInfo,

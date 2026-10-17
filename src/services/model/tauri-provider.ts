@@ -13,15 +13,27 @@
 
 import { Channel, invoke } from '@tauri-apps/api/core';
 
-import type { ChatRequest, ModelConfig, OperationResult, StreamResult } from '@/types';
+import type {
+  ChatRequest,
+  ModelConfig,
+  OperationResult,
+  PendingToolCall,
+  StreamResult,
+} from '@/types';
 import type { ModelProvider } from './types';
 
-/** Rust 通过 Channel 推过来的事件。目前只有一种。 */
-interface StreamEvent {
-  type: 'delta';
-  /** 累计至今的完整文本 */
-  text: string;
-}
+/** Rust 通过 Channel 推过来的事件 */
+type StreamEvent =
+  | {
+      type: 'delta';
+      /** 累计至今的完整文本 */
+      text: string;
+    }
+  | {
+      type: 'tool_call';
+      /** 当前已收到的工具调用清单 */
+      calls: PendingToolCall[];
+    };
 
 export function createTauriModelProvider(): ModelProvider {
   return {
@@ -36,13 +48,15 @@ export function createTauriModelProvider(): ModelProvider {
 
     async streamChat(
       input: ChatRequest,
-      onDelta: (text: string) => void
+      onDelta: (text: string) => void,
+      onToolProgress?: (calls: PendingToolCall[]) => void
     ): Promise<StreamResult> {
       // Channel 是 Tauri 2 给「Rust 主动推消息」准备的通道。
       // 用它而不是轮询命令，是因为流式输出天然是推送语义。
       const channel = new Channel<StreamEvent>();
       channel.onmessage = (event) => {
         if (event.type === 'delta') onDelta(event.text);
+        else if (event.type === 'tool_call') onToolProgress?.(event.calls);
       };
 
       return invoke<StreamResult>('stream_chat', {

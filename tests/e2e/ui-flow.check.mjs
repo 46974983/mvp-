@@ -441,8 +441,10 @@ try {
   // 工具调用：浏览器模式读不了文件也截不了屏，所以一个工具都不会提供给模型，
   // 也就不该出现「模型请求访问」的确认框
   check(
-    '浏览器模式下不出现「模型请求访问」确认框',
-    (await page.locator(testId('tool-request')).count()) === 0
+    '浏览器模式下不出现任何工具调用卡片',
+    (await page.locator(testId('tool-request')).count()) === 0 &&
+      (await page.locator(testId('tool-progress')).count()) === 0 &&
+      (await page.locator(testId('tool-outcome')).count()) === 0
   );
 
   // =========================================================== 8 主题切换

@@ -129,10 +129,28 @@ pub fn run() {
             };
 
             let state = window.state::<AppState>();
-            let action = crate::window::decide_close_action(
+
+            let (quitting, close_to_tray, tray_available) = (
+
                 state.window.is_quitting(),
+
                 state.window.close_to_tray(),
+
                 state.window.tray_available(),
+
+            );
+
+            let action = crate::window::decide_close_action(quitting, close_to_tray, tray_available);
+
+
+            // 记一记判定结果。这一条是验收时补的：只靠「窗口有没有消失」分不清
+
+            // 「判定成退出」和「压根没收到关闭事件」—— 这两种情况的修法完全不同。
+
+            log::info!(
+
+                "收到关闭请求：退出中={quitting} 缩到托盘={close_to_tray} 托盘可用={tray_available} → {action:?}"
+
             );
 
             if action == crate::window::CloseAction::HideToTray {
