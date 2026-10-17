@@ -144,8 +144,8 @@ export function FileAccessSettings() {
       <CardHeader>
         <CardTitle>本地文件</CardTitle>
         <CardDescription>
-          授权一个文件夹之后，你可以在设置页浏览、预览里面的文本文件。
-          当前不会自动附加到聊天请求，也不会发给模型；只能读这一个文件夹，读不了别处。
+          授权一个文件夹之后，你可以在设置页浏览、预览里面的文本文件，
+          也可以在聊天中允许模型按需读取；只能读这一个文件夹，读不了别处。
         </CardDescription>
       </CardHeader>
 

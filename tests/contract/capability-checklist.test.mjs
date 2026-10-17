@@ -359,17 +359,16 @@ test('重置本地数据要顺手撤销系统层面的副作用', () => {
   );
 });
 
-test('文件和截屏能力的文案如实说明目前只在设置页预览', () => {
+test('文件和截屏能力的文案如实说明支持工具调用请求', () => {
   const fileSettings = read('src/components/settings/FileAccessSettings.tsx');
   const screenshotSettings = read('src/components/settings/ScreenshotSettings.tsx');
   const platform = read('src/services/platform/types.ts');
 
   assert.match(fileSettings, /设置页浏览、预览/);
-  assert.match(fileSettings, /不会自动附加到聊天请求/);
-  assert.match(screenshotSettings, /设置页手动抓取主屏并预览/);
-  assert.match(screenshotSettings, /不会附加到聊天或发给模型/);
-  assert.match(platform, /目前不会自动附加到聊天请求/);
-  assert.match(platform, /目前不会发给模型/);
+  assert.match(fileSettings, /允许模型按需读取/);
+  assert.match(screenshotSettings, /允许模型按需请求截图/);
+  assert.match(platform, /按确认请求读取文件/);
+  assert.match(platform, /按确认请求截图/);
 });
 
 // ---------------------------------------------------------------------------

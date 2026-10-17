@@ -79,7 +79,7 @@ export function ScreenshotSettings() {
       <CardHeader>
         <CardTitle>截屏</CardTitle>
         <CardDescription>
-          在设置页手动抓取主屏并预览。当前不会附加到聊天或发给模型。
+          在设置页手动抓取主屏并预览，也可以在聊天中允许模型按需请求截图。
           默认关闭，需要你明确开启。
         </CardDescription>
       </CardHeader>
@@ -112,7 +112,7 @@ export function ScreenshotSettings() {
                   屏幕上当时有什么就会拍到什么，包括其他窗口和通知。
                 </p>
                 <p>截图只在内存里传递，不会写到磁盘上；关掉这个开关时，上一次的画面也会立刻丢弃。</p>
-                <p>当前截图只回到设置页预览，不会自动进入聊天上下文。</p>
+                <p>截图不会自动发送；只有你在聊天里明确允许模型请求时，才会进入本轮上下文。</p>
               </div>
             </div>
 

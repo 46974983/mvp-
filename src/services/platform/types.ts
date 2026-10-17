@@ -72,7 +72,7 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   },
   'file-read': {
     label: '读取本地文件',
-    description: '在设置页浏览、预览你显式授权的那一个文件夹里的文本文件；目前不会自动附加到聊天请求',
+    description: '在设置页浏览、预览你显式授权的文件夹，也可在聊天中按确认请求读取文件',
     plannedStage: 'D',
     desktopImplemented: true,
   },
@@ -84,7 +84,7 @@ export const PLATFORM_CAPABILITY_SPECS: Record<PlatformCapability, PlatformCapab
   },
   screenshot: {
     label: '截屏',
-    description: '在设置页手动抓取并预览主屏画面；目前不会发给模型。默认关闭，需要你明确开启',
+    description: '在设置页手动抓取并预览主屏画面，也可在聊天中按确认请求截图。默认关闭',
     plannedStage: 'D',
     desktopImplemented: true,
   },
