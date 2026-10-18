@@ -724,9 +724,10 @@ test('裁剪只作用于持久化历史，工具轮次在裁剪之外拼接', ()
   // 而且「有 tool 结果没有对应的 tool_calls」会让服务端直接拒绝整次请求。
   const store = readFile('src/features/chat/store.ts');
 
+  // 变量名允许调整，但「历史在前、工具轮次在后」这个顺序不能变
   assert.match(
     store,
-    /messages: \[\.\.\.trimHistory\(history\), \.\.\.toolTurns\]/,
+    /messages: \[\.\.\.(?:trimmed|trimHistory\(history\)), \.\.\.(?:dedupedToolTurns|toolTurns)\]/,
     '顺序必须是「先裁历史、再拼工具轮次」'
   );
   // 旧的硬截断不许回来
@@ -734,4 +735,25 @@ test('裁剪只作用于持久化历史，工具轮次在裁剪之外拼接', ()
     !/slice\(-MAX_HISTORY/.test(store),
     '不该再有 slice(-MAX_HISTORY…) 这种硬截断'
   );
+});
+
+test('附件去重发生在组装请求时，且工具轮次对着裁剪后的历史去重', () => {
+  const store = readFile('src/features/chat/store.ts');
+
+  // 去重只在「要发出去的 messages」这一步做
+  assert.match(store, /const dedupedHistory = dedupeAttachments\(history\)/, '历史要先内部去重');
+  assert.match(store, /const trimmed = trimHistory\(dedupedHistory\)/, '再去裁剪');
+
+  // 工具轮次的去重基准必须是**裁剪之后仍然存在**的那部分历史。
+  // 顺序反了的话：「历史那份被预算裁掉了、工具这份又被当成重复丢掉」，附件就彻底没了
+  const rememberAt = store.indexOf('rememberAttachments(trimmed');
+  const dedupeToolAt = store.indexOf('dedupeAttachments(toolTurns');
+  assert.ok(rememberAt > 0, '要先把裁剪后的历史登记进已见集合');
+  assert.ok(dedupeToolAt > rememberAt, '先登记裁剪后的历史，再去重工具轮次');
+
+  // 持久化的消息一条都不能动：去重函数是纯的，不许写回存储
+  const history = readFile('src/features/chat/history.ts');
+  for (const forbidden of ['updateMessage', 'appendMessage', 'deleteMessage', 'getState']) {
+    assert.ok(!history.includes(forbidden), `去重/裁剪不该写回存储或读 store（${forbidden}）`);
+  }
 });

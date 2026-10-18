@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createSeenAttachments,
+  dedupeAttachments,
   MAX_HISTORY_BYTES,
   MAX_HISTORY_MESSAGES,
+  rememberAttachments,
+  sameAttachment,
   trimHistory,
   turnBytes,
 } from '@/features/chat/history';
@@ -134,5 +138,175 @@ describe('历史裁剪', () => {
     const suffix = turns.slice(turns.length - kept.length);
 
     expect(kept).toEqual(suffix);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 附件身份与去重
+// ---------------------------------------------------------------------------
+
+function fileAt(relativePath: string, content: string): ChatAttachment {
+  return {
+    kind: 'file',
+    name: relativePath.split('/').at(-1) ?? relativePath,
+    relativePath,
+    content,
+    bytes: content.length,
+    truncated: false,
+  };
+}
+
+function shot(dataUrl: string): ChatAttachment {
+  return {
+    kind: 'screenshot',
+    name: '屏幕截图',
+    dataUrl,
+    width: 2560,
+    height: 1440,
+    bytes: 1024,
+  };
+}
+
+function userWith(content: string, attachments: ChatAttachment[]): ChatTurn {
+  return { role: 'user', content, attachments };
+}
+
+/** 数一下一串消息里带了几份附件 */
+function countAttachments(turns: readonly ChatTurn[]): number {
+  return turns.reduce((sum, turn) => sum + (turn.attachments?.length ?? 0), 0);
+}
+
+describe('附件身份', () => {
+  it('同一路径、同一内容算同一份', () => {
+    expect(sameAttachment(fileAt('a.md', '内容'), fileAt('a.md', '内容'))).toBe(true);
+  });
+
+  it('同一路径、内容不同算两份 —— 文件改过了', () => {
+    expect(sameAttachment(fileAt('a.md', '旧内容'), fileAt('a.md', '新内容'))).toBe(false);
+  });
+
+  it('不同路径、同一内容算两份（既定规则：路径是身份的一部分）', () => {
+    // 按内容合并会让模型引用到一个它没见过的路径，所以刻意不合并
+    expect(sameAttachment(fileAt('a.md', '一样的'), fileAt('b.md', '一样的'))).toBe(false);
+  });
+
+  it('截图按图片数据判身份，不看名字和尺寸', () => {
+    const first = shot('data:image/png;base64,AAA');
+    const sameAgain = { ...shot('data:image/png;base64,AAA'), name: '另一张' };
+    const different = shot('data:image/png;base64,BBB');
+
+    expect(sameAttachment(first, sameAgain)).toBe(true);
+    expect(sameAttachment(first, different)).toBe(false);
+  });
+
+  it('文件与截图永远不是同一份', () => {
+    expect(sameAttachment(fileAt('a.md', 'x'), shot('data:image/png;base64,AAA'))).toBe(false);
+  });
+});
+
+describe('附件去重', () => {
+  it('同一个文件分两次发送，只保留第一次那份', () => {
+    const turns = [
+      userWith('第一次', [fileAt('notes.md', '内容')]),
+      assistant('好'),
+      userWith('第二次', [fileAt('notes.md', '内容')]),
+    ];
+
+    const kept = dedupeAttachments(turns);
+
+    expect(countAttachments(kept)).toBe(1);
+    // 保留的是**第一次**出现的那份
+    expect(kept[0]?.attachments).toHaveLength(1);
+    // 第二轮那条消息本身还在（正文不能丢），只是不带附件了
+    expect(kept[2]?.content).toBe('第二次');
+    expect(kept[2]?.attachments).toBeUndefined();
+    expect(kept).toHaveLength(3);
+  });
+
+  it('同一路径内容变化时两个版本都保留', () => {
+    const turns = [
+      userWith('旧版', [fileAt('notes.md', '第一版')]),
+      assistant('好'),
+      userWith('新版', [fileAt('notes.md', '第二版')]),
+    ];
+
+    expect(countAttachments(dedupeAttachments(turns))).toBe(2);
+  });
+
+  it('不同路径的同名文件都保留', () => {
+    const turns = [
+      userWith('这个', [fileAt('a/notes.md', '一样的内容')]),
+      assistant('好'),
+      userWith('那个', [fileAt('b/notes.md', '一样的内容')]),
+    ];
+
+    expect(countAttachments(dedupeAttachments(turns))).toBe(2);
+  });
+
+  it('同一张截图重复出现只保留一份', () => {
+    const turns = [
+      userWith('看图1', [shot('data:image/png;base64,SAME')]),
+      assistant('看到了'),
+      userWith('看图2', [shot('data:image/png;base64,SAME')]),
+    ];
+
+    expect(countAttachments(dedupeAttachments(turns))).toBe(1);
+  });
+
+  it('两张不同的截图（尺寸一样）不会被误判成同一张', () => {
+    const turns = [
+      userWith('第一张', [shot('data:image/png;base64,ONE')]),
+      assistant('嗯'),
+      userWith('第二张', [shot('data:image/png;base64,TWO')]),
+    ];
+
+    expect(countAttachments(dedupeAttachments(turns))).toBe(2);
+  });
+
+  it('附件全被去掉、正文又空的消息整条跳过', () => {
+    const turns = [
+      userWith('', [fileAt('notes.md', '内容')]),
+      assistant('好'),
+      // 这条只有附件没写字，附件又是重复的 —— 去掉之后什么都不剩
+      userWith('', [fileAt('notes.md', '内容')]),
+    ];
+
+    const kept = dedupeAttachments(turns);
+    expect(kept).toHaveLength(2);
+    expect(kept[0]?.attachments).toHaveLength(1);
+  });
+
+  it('没有附件的消息原样通过，一个都不少', () => {
+    const turns = [user('一'), assistant('二'), user('三')];
+    expect(dedupeAttachments(turns)).toEqual(turns);
+  });
+
+  it('共享已见集合时，后一批消息里的重复附件也会被去掉', () => {
+    // 这就是「工具轮次里的附件与历史里的重复」那条规则的底层机制
+    const seen = createSeenAttachments();
+    const history = [userWith('', [shot('data:image/png;base64,SAME')])];
+    rememberAttachments(history, seen);
+
+    const toolTurns = [
+      { role: 'user' as const, content: '（这是刚才抓到的屏幕截图）', attachments: [shot('data:image/png;base64,SAME')] },
+    ];
+    const kept = dedupeAttachments(toolTurns, seen);
+
+    // 图片去掉了，但那句话还在 —— 它在对话里是有意义的
+    expect(countAttachments(kept)).toBe(0);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.content).toContain('屏幕截图');
+  });
+
+  it('去重不修改传进来的消息对象', () => {
+    // 只组装请求，不改任何已有数据 —— 持久化的东西一条都不能动
+    const original = userWith('带附件', [fileAt('a.md', 'x')]);
+    const duplicate = userWith('再来一次', [fileAt('a.md', 'x')]);
+    const turns = [original, duplicate];
+
+    dedupeAttachments(turns);
+
+    expect(original.attachments).toHaveLength(1);
+    expect(duplicate.attachments).toHaveLength(1);
   });
 });

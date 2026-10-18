@@ -26,7 +26,12 @@ import { createLogger, toUserFacingError } from '@/lib/log';
 import { summarizeForNotification } from '@/lib/text';
 import type { ConversationsStore } from '@/features/conversations/store';
 import type { SettingsStore } from '@/features/settings/store';
-import { trimHistory } from './history';
+import {
+  createSeenAttachments,
+  dedupeAttachments,
+  rememberAttachments,
+  trimHistory,
+} from './history';
 
 const logger = createLogger('chat');
 
@@ -486,13 +491,25 @@ export function createChatStore(
         attachments: message.attachments.length > 0 ? message.attachments : undefined,
       }));
 
+    // 附件去重：同一个文件分两次发过来时，历史里两条消息都带着它，
+    // 模型会收到两遍同样的内容。**只在组装请求这一步去重**，
+    // 界面和数据库里的消息一条都不动 —— 用户确实发过两次，那是事实。
+    const dedupedHistory = dedupeAttachments(history);
+    const trimmed = trimHistory(dedupedHistory);
+
+    // 工具轮次里的附件也要去重，但只对着**裁剪之后仍然存在的那部分**历史去重：
+    // 否则「历史那份被预算裁掉了、工具这份又被当成重复丢掉」，附件就彻底没了
+    const seenAttachments = createSeenAttachments();
+    rememberAttachments(trimmed, seenAttachments);
+    const dedupedToolTurns = dedupeAttachments(toolTurns, seenAttachments);
+
     const request: ChatRequest = {
       model: modelConfig.modelName,
       systemPrompt: appSettings.persona.systemPrompt,
       // 工具中间轮次接在历史之后：它们只属于这一轮对话，不落库
       // 只裁持久化历史；工具中间轮次完整保留，由 MAX_TOOL_ROUNDS 单独管 ——
       // 把它们也纳入预算的话，会直接切断「调用 + 结果」这条链
-      messages: [...trimHistory(history), ...toolTurns],
+      messages: [...trimmed, ...dedupedToolTurns],
       tools: availableTools(),
     };
 

@@ -1201,3 +1201,159 @@ describe('历史裁剪与工具链', () => {
     expect(toolTurns[0]?.content).toContain('内容:notes.md');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 跨消息附件去重（只在组装请求时去重，不动持久化消息）
+// ---------------------------------------------------------------------------
+
+function sameFile() {
+  return {
+    kind: 'file' as const,
+    name: 'notes.md',
+    relativePath: 'notes.md',
+    content: '一样的内容',
+    bytes: 12,
+    truncated: false,
+  };
+}
+
+describe('附件去重', () => {
+  it('同一个文件分两次发送，发给模型的历史里只注入一次', async () => {
+    const { provider, captures } = createScriptedProvider([{ text: '好。' }, { text: '好。' }]);
+    const { chat, conversations } = await setup(provider);
+
+    chat.getState().attach(sameFile());
+    await chat.getState().send('第一次');
+    chat.getState().attach(sameFile());
+    await chat.getState().send('第二次');
+
+    const second = captures[1]?.messages ?? [];
+    const injected = second
+      .flatMap((turn) => turn.attachments ?? [])
+      .filter((item) => item.kind === 'file' && item.relativePath === 'notes.md');
+
+    expect(injected).toHaveLength(1);
+
+    // 但用户自己的两条消息一条都没少，附件也都还在 ——
+    // 用户确实发过两次，那是事实，界面和数据库都不能改
+    const userMessages = conversations.getState().messages.filter((item) => item.role === 'user');
+    expect(userMessages).toHaveLength(2);
+    expect(userMessages[0]?.attachments).toHaveLength(1);
+    expect(userMessages[1]?.attachments).toHaveLength(1);
+  });
+
+  it('同路径不同内容时两个版本都发给模型', async () => {
+    const { provider, captures } = createScriptedProvider([{ text: '好。' }, { text: '好。' }]);
+    const { chat } = await setup(provider);
+
+    chat.getState().attach({ ...sameFile(), content: '第一版内容' });
+    await chat.getState().send('旧版');
+    chat.getState().attach({ ...sameFile(), content: '第二版内容' });
+    await chat.getState().send('新版');
+
+    const second = captures[1]?.messages ?? [];
+    const injected = second
+      .flatMap((turn) => turn.attachments ?? [])
+      .filter((item) => item.kind === 'file' && item.relativePath === 'notes.md');
+
+    expect(injected).toHaveLength(2);
+  });
+
+  it('工具调用产生的截图与历史里的截图重复时只保留一份，且配对不被打断', async () => {
+    const { platform } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我截个图。', toolCalls: [{ id: 'call_shot', name: 'take_screenshot', arguments: '{}' }] },
+      { text: '看到了。' },
+    ]);
+    const { chat, conversations, services, settings } = await setup(provider, platform);
+    await settings.getState().setScreenshotEnabled(true);
+
+    // 历史里已经有一张截图，内容和工具将要抓到的那张完全一样
+    const created = await conversations.getState().createConversation();
+    await services.storage.conversations.appendMessage({
+      conversationId: created.id,
+      role: 'user',
+      content: '这是我之前发过的截图',
+      status: 'complete',
+      attachments: [
+        {
+          kind: 'screenshot',
+          name: '屏幕截图',
+          dataUrl: 'data:image/png;base64,SHOT',
+          width: 2560,
+          height: 1440,
+          bytes: 2048,
+        },
+      ],
+    });
+    await conversations.getState().reloadActiveMessages();
+
+    await chat.getState().send('帮我看看屏幕');
+    await chat.getState().resolveToolRequest([true]);
+
+    const second = captures[1]?.messages ?? [];
+    const screenshots = second
+      .flatMap((turn) => turn.attachments ?? [])
+      .filter((item) => item.kind === 'screenshot');
+
+    // 历史一份 + 工具一份，是同一张图 —— 只留一份
+    expect(screenshots).toHaveLength(1);
+
+    // 首条仍然是 user，没有变成「助手自说自话」开头
+    expect(second[0]?.role).toBe('user');
+
+    // 工具链配对完整：tool 结果紧跟在发起它的 assistant 后面，id 对得上
+    const toolIndex = second.findIndex((turn) => turn.role === 'tool');
+    expect(toolIndex).toBeGreaterThan(0);
+    expect(second[toolIndex - 1]?.toolCalls?.[0]?.id).toBe('call_shot');
+    expect(second[toolIndex]?.toolCallId).toBe('call_shot');
+
+    // 那条「这是刚才抓到的截图」的话还在，只是图片被去掉了
+    const noteTurn = second.find((turn) => turn.content.includes('屏幕截图'));
+    expect(noteTurn).toBeDefined();
+  });
+
+  it('工具读到的文件与用户手动发的是同一份时只留一份', async () => {
+    const { platform } = createToolCapablePlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我先看一下。', toolCalls: [fileCall('notes.md', 'call_dup')] },
+      { text: '看完了。' },
+    ]);
+    const { chat, conversations, services } = await setup(provider, platform);
+
+    // 历史里用户已经手动发过 notes.md，内容和工具读到的完全一样（内容:notes.md）
+    const created = await conversations.getState().createConversation();
+    await services.storage.conversations.appendMessage({
+      conversationId: created.id,
+      role: 'user',
+      content: '这是我发的文件',
+      status: 'complete',
+      attachments: [
+        {
+          kind: 'file',
+          name: 'notes.md',
+          relativePath: 'notes.md',
+          content: '内容:notes.md',
+          bytes: 12,
+          truncated: false,
+        },
+      ],
+    });
+    await conversations.getState().reloadActiveMessages();
+
+    await chat.getState().send('再看看 notes.md');
+    await chat.getState().resolveToolRequest([true]);
+
+    const second = captures[1]?.messages ?? [];
+    const files = second
+      .flatMap((turn) => turn.attachments ?? [])
+      .filter((item) => item.kind === 'file' && item.relativePath === 'notes.md');
+
+    // 历史里那份 + 回答上挂的那份，是同一个文件 —— 只留一份
+    expect(files).toHaveLength(1);
+
+    // 但工具结果里的正文仍然在：模型要能读到内容
+    const toolTurn = second.find((turn) => turn.role === 'tool');
+    expect(toolTurn?.content).toContain('内容:notes.md');
+  });
+});

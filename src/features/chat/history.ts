@@ -8,7 +8,7 @@
  * 一旦上下文出错就分不清是哪一环干的。
  */
 
-import type { ChatTurn } from '@/types';
+import type { ChatAttachment, ChatTurn } from '@/types';
 
 /**
  * 历史条数上限。
@@ -89,6 +89,128 @@ export function trimHistory(turns: readonly ChatTurn[]): ChatTurn[] {
       const turn = turns[index];
       if (turn?.role === 'user') return [turn];
     }
+  }
+
+  return kept;
+}
+
+// ---------------------------------------------------------------------------
+// 附件身份与去重
+// ---------------------------------------------------------------------------
+
+/**
+ * 附件身份的判定规则
+ * ----------------------------------------------------------------------------
+ * 一条附件的身份 = **kind + 来源路径 + 内容**。
+ *
+ * | 情况 | 判定 | 理由 |
+ * | --- | --- | --- |
+ * | 同一路径、内容相同 | **同一份**（重复，只留第一次） | 同一个文件被分两次发过来 |
+ * | 同一路径、内容不同 | **不同附件**（两份都留） | 文件改过了，两个版本都有信息 |
+ * | 不同路径、内容相同 | **不同附件**（两份都留） | 路径是模型引用它的方式；两份文件可能各自演化 |
+ * | 截图，图片数据相同 | **同一份** | 同一张截图 |
+ * | 截图，图片数据不同 | **不同附件** | 哪怕尺寸完全一样，也是两张不同的画面 |
+ *
+ * 「不同路径、内容相同」这一条是**刻意这么定的**：按内容合并看起来更省，
+ * 但会让模型引用到一个它没见过的路径 —— 用户明明发了两个文件，
+ * 模型却只能看到其中一个的路径，后面追问就会答错。
+ *
+ * 实现上**不做哈希**：先按「kind + 路径 + 内容长度」分桶，再在桶里做完整比较。
+ * 哈希会有碰撞，而碰撞的后果是**静默丢掉一张用户给的文件** ——
+ * 那比多传一份严重得多。
+ */
+export type SeenAttachments = Map<string, ChatAttachment[]>;
+
+export function createSeenAttachments(): SeenAttachments {
+  return new Map();
+}
+
+/**
+ * 分桶用的廉价键。
+ *
+ * 用 `\u0000` 分隔：路径里不会出现这个字符，拼接不会把两个不同的附件拼成同一个键。
+ * 桶键只用来**缩小比较范围**，判重始终以 `sameAttachment` 为准。
+ */
+function bucketKeyOf(attachment: ChatAttachment): string {
+  if (attachment.kind === 'file') {
+    return ['file', attachment.relativePath, String(attachment.content.length)].join('\u0000');
+  }
+  return ['screenshot', String(attachment.dataUrl.length)].join('\u0000');
+}
+
+/** 两条附件是不是同一份。这是身份规则的唯一实现，别在别处另写一套。 */
+export function sameAttachment(left: ChatAttachment, right: ChatAttachment): boolean {
+  if (left.kind === 'file' && right.kind === 'file') {
+    return left.relativePath === right.relativePath && left.content === right.content;
+  }
+  if (left.kind === 'screenshot' && right.kind === 'screenshot') {
+    return left.dataUrl === right.dataUrl;
+  }
+  return false;
+}
+
+/** 登记一条附件。返回 false 表示这份之前已经出现过。 */
+function claim(attachment: ChatAttachment, seen: SeenAttachments): boolean {
+  const key = bucketKeyOf(attachment);
+  const bucket = seen.get(key);
+
+  if (!bucket) {
+    seen.set(key, [attachment]);
+    return true;
+  }
+  if (bucket.some((existing) => sameAttachment(existing, attachment))) {
+    return false;
+  }
+
+  bucket.push(attachment);
+  return true;
+}
+
+/** 把一组消息里的附件登记进去，不改变消息本身。 */
+export function rememberAttachments(
+  turns: readonly ChatTurn[],
+  seen: SeenAttachments
+): void {
+  for (const turn of turns) {
+    for (const attachment of turn.attachments ?? []) {
+      claim(attachment, seen);
+    }
+  }
+}
+
+/**
+ * 去掉**后面重复出现**的附件，保留第一次出现的那份。
+ *
+ * 只作用于「要发给模型的消息」，**不碰持久化的消息**：
+ * 界面和数据库里的历史一条都不能改 —— 用户看到自己确实发过两次，
+ * 那是事实；模型只需要看一遍。
+ *
+ * 一条消息如果附件全被去掉、正文又是空的，它就不带任何信息了，整条跳过。
+ * 正文非空的那种保留（比如工具结果那条「这是刚才抓到的截图」+ 图片，
+ * 图片重复了，但这句话本身还在对话里）。
+ */
+export function dedupeAttachments(
+  turns: readonly ChatTurn[],
+  seen: SeenAttachments = createSeenAttachments()
+): ChatTurn[] {
+  const kept: ChatTurn[] = [];
+
+  for (const turn of turns) {
+    const attachments = turn.attachments ?? [];
+    if (attachments.length === 0) {
+      kept.push(turn);
+      continue;
+    }
+
+    const unique = attachments.filter((attachment) => claim(attachment, seen));
+
+    if (unique.length === 0 && turn.content.trim().length === 0) continue;
+
+    kept.push(
+      unique.length === attachments.length
+        ? turn
+        : { ...turn, attachments: unique.length > 0 ? unique : undefined }
+    );
   }
 
   return kept;
