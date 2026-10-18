@@ -1357,3 +1357,64 @@ describe('附件去重', () => {
     expect(toolTurn?.content).toContain('内容:notes.md');
   });
 });
+
+describe('附件去重 × 历史裁剪的顺序', () => {
+  it('旧消息里的附件被预算裁掉时，较新消息里的同一附件必须留下', async () => {
+    // 这个组合最容易写错：先去重再裁剪，去重会把保留权交给**最早**那份，
+    // 而最早那份恰恰最可能被字节预算淘汰 —— 结果两边都没了。
+    const { provider, captures } = createScriptedProvider([{ text: '好。' }, { text: '好。' }]);
+    const { chat, conversations, services } = await setup(provider);
+
+    const fileA = {
+      kind: 'file' as const,
+      name: 'a.md',
+      relativePath: 'a.md',
+      content: '只有这一小段',
+      bytes: 18,
+      truncated: false,
+    };
+
+    // 第一条：用户带着附件 A（它会被后来的预算淘汰）
+    chat.getState().attach(fileA);
+    await chat.getState().send('第一次带上 a.md');
+
+    const conversationId = conversations.getState().activeId ?? '';
+
+    // 中间塞进足够大的历史，确保字节预算会把最早那条挤掉
+    const chunk = 'x'.repeat(1_500_000);
+    for (let index = 0; index < 3; index += 1) {
+      await services.storage.conversations.appendMessage({
+        conversationId,
+        role: 'user',
+        content: `大消息 ${index}`,
+        status: 'complete',
+        attachments: [
+          {
+            kind: 'file',
+            name: 'big.txt',
+            relativePath: `big-${index}.txt`,
+            content: chunk,
+            bytes: chunk.length,
+            truncated: false,
+          },
+        ],
+      });
+    }
+    await conversations.getState().reloadActiveMessages();
+
+    // 最近一条：再次带上同一个附件 A
+    chat.getState().attach(fileA);
+    await chat.getState().send('再看一次 a.md');
+
+    const second = captures[1]?.messages ?? [];
+    const injected = second
+      .flatMap((turn) => turn.attachments ?? [])
+      .filter((item) => item.kind === 'file' && item.relativePath === 'a.md');
+
+    // 只剩最近这一份时，附件必须还在 —— 否则模型会说「我看不到 a.md」
+    expect(injected).toHaveLength(1);
+    // 最近那条消息本身也还在
+    expect(second.some((turn) => turn.content === '再看一次 a.md')).toBe(true);
+    expect(second[0]?.role).toBe('user');
+  });
+});

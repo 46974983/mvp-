@@ -727,8 +727,8 @@ test('裁剪只作用于持久化历史，工具轮次在裁剪之外拼接', ()
   // 变量名允许调整，但「历史在前、工具轮次在后」这个顺序不能变
   assert.match(
     store,
-    /messages: \[\.\.\.(?:trimmed|trimHistory\(history\)), \.\.\.(?:dedupedToolTurns|toolTurns)\]/,
-    '顺序必须是「先裁历史、再拼工具轮次」'
+    /messages: \[\.\.\.(?:dedupedHistory|trimmed|trimHistory\(history\)), \.\.\.(?:dedupedToolTurns|toolTurns)\]/,
+    '顺序必须是「先历史、再工具轮次」'
   );
   // 旧的硬截断不许回来
   assert.ok(
@@ -737,21 +737,32 @@ test('裁剪只作用于持久化历史，工具轮次在裁剪之外拼接', ()
   );
 });
 
-test('附件去重发生在组装请求时，且工具轮次对着裁剪后的历史去重', () => {
+test('附件去重的顺序是「先裁剪、再去重」—— 反过来会丢附件', () => {
   const store = readFile('src/features/chat/store.ts');
 
-  // 去重只在「要发出去的 messages」这一步做
-  assert.match(store, /const dedupedHistory = dedupeAttachments\(history\)/, '历史要先内部去重');
-  assert.match(store, /const trimmed = trimHistory\(dedupedHistory\)/, '再去裁剪');
+  const trimAt = store.indexOf('const trimmed = trimHistory(history)');
+  const dedupeAt = store.indexOf('const dedupedHistory = dedupeAttachments(trimmed)');
 
-  // 工具轮次的去重基准必须是**裁剪之后仍然存在**的那部分历史。
-  // 顺序反了的话：「历史那份被预算裁掉了、工具这份又被当成重复丢掉」，附件就彻底没了
-  const rememberAt = store.indexOf('rememberAttachments(trimmed');
+  assert.ok(trimAt > 0, '历史要先裁剪');
+  assert.ok(dedupeAt > trimAt, '裁剪之后再去重');
+
+  // **这条是拿一个真 bug 换来的。**
+  // 去重保留的是「第一次出现」的那份，而最早那份恰恰最可能被字节预算淘汰。
+  // 先去重的话：新那份被去重删掉、旧那份被裁剪删掉 —— 附件两边都没了，
+  // 模型会对用户说「我看不到这个文件」。回归用例在
+  // tests/unit/chat-store.test.ts「旧消息里的附件被预算裁掉时…」。
+  assert.ok(
+    !/dedupeAttachments\(history\)/.test(store),
+    '不许先对完整历史去重再裁剪'
+  );
+
+  // 工具轮次的去重基准必须是裁剪+去重之后仍然存在的那部分历史
+  const rememberAt = store.indexOf('rememberAttachments(dedupedHistory');
   const dedupeToolAt = store.indexOf('dedupeAttachments(toolTurns');
-  assert.ok(rememberAt > 0, '要先把裁剪后的历史登记进已见集合');
-  assert.ok(dedupeToolAt > rememberAt, '先登记裁剪后的历史，再去重工具轮次');
+  assert.ok(rememberAt > 0, '要先把保留下来的历史登记进已见集合');
+  assert.ok(dedupeToolAt > rememberAt, '先登记保留的历史，再去重工具轮次');
 
-  // 持久化的消息一条都不能动：去重函数是纯的，不许写回存储
+  // 持久化的消息一条都不能动：去重/裁剪都是纯函数，不许写回存储
   const history = readFile('src/features/chat/history.ts');
   for (const forbidden of ['updateMessage', 'appendMessage', 'deleteMessage', 'getState']) {
     assert.ok(!history.includes(forbidden), `去重/裁剪不该写回存储或读 store（${forbidden}）`);

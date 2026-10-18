@@ -310,3 +310,49 @@ describe('附件去重', () => {
     expect(duplicate.attachments).toHaveLength(1);
   });
 });
+
+describe('裁剪与去重的先后顺序', () => {
+  it('先裁剪再去重：旧那份被预算裁掉时，新那份的附件会留下', () => {
+    // 这是 store 里实际使用的顺序。反过来写（先去重再裁剪）会两边都丢掉：
+    // 去重把新那份删了，裁剪把旧那份删了 —— 附件彻底消失。
+    // 端到端的回归用例在 tests/unit/chat-store.test.ts。
+    const chunk = 'x'.repeat(1_500_000);
+    const turns = [
+      userWith('旧的', [fileAt('a.md', 'A')]),
+      userWith('大 1', [fileAt('big1.txt', chunk)]),
+      userWith('大 2', [fileAt('big2.txt', chunk)]),
+      userWith('大 3', [fileAt('big3.txt', chunk)]),
+      userWith('新的', [fileAt('a.md', 'A')]),
+    ];
+
+    const kept = dedupeAttachments(trimHistory(turns));
+    const keptA = kept
+      .flatMap((turn) => turn.attachments ?? [])
+      .filter((item) => item.kind === 'file' && item.relativePath === 'a.md');
+
+    // 只剩最近那一份时，附件必须还在
+    expect(keptA).toHaveLength(1);
+    // 而且它挂在最新那条消息上，不是被裁掉的旧消息上
+    expect(kept.at(-1)?.content).toBe('新的');
+    expect(kept.at(-1)?.attachments).toHaveLength(1);
+  });
+
+  it('反过来（先去重再裁剪）会丢附件 —— 这个对照说明为什么顺序不能反', () => {
+    const chunk = 'x'.repeat(1_500_000);
+    const turns = [
+      userWith('旧的', [fileAt('a.md', 'A')]),
+      userWith('大 1', [fileAt('big1.txt', chunk)]),
+      userWith('大 2', [fileAt('big2.txt', chunk)]),
+      userWith('大 3', [fileAt('big3.txt', chunk)]),
+      userWith('新的', [fileAt('a.md', 'A')]),
+    ];
+
+    // 故意用错的顺序跑一遍：去重把新那份删掉，裁剪又把旧那份删掉
+    const wrongOrder = trimHistory(dedupeAttachments(turns));
+    const keptA = wrongOrder
+      .flatMap((turn) => turn.attachments ?? [])
+      .filter((item) => item.kind === 'file' && item.relativePath === 'a.md');
+
+    expect(keptA).toHaveLength(0);
+  });
+});

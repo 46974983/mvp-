@@ -494,13 +494,22 @@ export function createChatStore(
     // 附件去重：同一个文件分两次发过来时，历史里两条消息都带着它，
     // 模型会收到两遍同样的内容。**只在组装请求这一步去重**，
     // 界面和数据库里的消息一条都不动 —— 用户确实发过两次，那是事实。
-    const dedupedHistory = dedupeAttachments(history);
-    const trimmed = trimHistory(dedupedHistory);
+    //
+    // **顺序必须是「先裁剪、再去重」**，反过来会丢附件：
+    // 去重保留的是「第一次出现」的那份，而最早那份恰恰最可能被字节预算淘汰。
+    // 先去重的话，新那份被删、旧那份又被裁剪删 —— 两边都没了，
+    // 模型会对用户说「我看不到这个文件」。先裁剪则保证：
+    // 只要还有一份活下来，去重之后附件就一定在。
+    //
+    // 代价是字节预算会把重复的附件也计进去（算得偏保守），
+    // 最终请求会比预算小一些 —— 少留几条历史，换「附件不丢」，这个取舍是值的。
+    const trimmed = trimHistory(history);
+    const dedupedHistory = dedupeAttachments(trimmed);
 
-    // 工具轮次里的附件也要去重，但只对着**裁剪之后仍然存在的那部分**历史去重：
-    // 否则「历史那份被预算裁掉了、工具这份又被当成重复丢掉」，附件就彻底没了
+    // 工具轮次里的附件也要去重，基准是**裁剪并去重之后仍然存在**的历史：
+    // 否则「历史那份被预算裁掉了、工具这份又被当成重复丢掉」，附件一样会消失
     const seenAttachments = createSeenAttachments();
-    rememberAttachments(trimmed, seenAttachments);
+    rememberAttachments(dedupedHistory, seenAttachments);
     const dedupedToolTurns = dedupeAttachments(toolTurns, seenAttachments);
 
     const request: ChatRequest = {
@@ -509,7 +518,7 @@ export function createChatStore(
       // 工具中间轮次接在历史之后：它们只属于这一轮对话，不落库
       // 只裁持久化历史；工具中间轮次完整保留，由 MAX_TOOL_ROUNDS 单独管 ——
       // 把它们也纳入预算的话，会直接切断「调用 + 结果」这条链
-      messages: [...trimmed, ...dedupedToolTurns],
+      messages: [...dedupedHistory, ...dedupedToolTurns],
       tools: availableTools(),
     };
 
