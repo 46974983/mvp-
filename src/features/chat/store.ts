@@ -58,8 +58,15 @@ const TOOL_TIMEOUT_MS = 15_000;
 /**
  * 给一个承诺加超时。
  *
- * 注意：**这只是不再等它**，底层操作可能还在跑（Rust 侧的读取/截屏没有中断点）。
- * 这在这里是可以接受的：读一个文件、抓一张屏都是一次性的，不会有后续副作用。
+ * 三条不显然的性质，改它之前先读一遍：
+ *
+ * 1. **这只是「不再等它」**，底层操作可能还在跑（Rust 侧的读取/截屏没有中断点）。
+ *    这可以接受：读一个文件、抓一张屏都是一次性的，没有后续副作用。
+ * 2. **超时之后底层才失败也不会炸**：`Promise.race` 已经给两边都挂了处理器，
+ *    迟到的拒绝会被它吃掉，不会变成 unhandled rejection。
+ * 3. **超时也必须走成一条工具结果**（由调用方在 catch 里生成）。
+ *    光抛错不给结果的话，`assistant(tool_calls)` 后面就少一条 `tool`，
+ *    服务端会拒绝整次请求 —— 那比这次读取失败严重得多。
  */
 async function withToolTimeout<T>(work: Promise<T>, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;

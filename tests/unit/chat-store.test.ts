@@ -1418,3 +1418,179 @@ describe('附件去重 × 历史裁剪的顺序', () => {
     expect(second[0]?.role).toBe('user');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 工具执行超时后的恢复
+//
+// 超时不是「一次失败」，而是「这一轮必须能干净地结束」：
+// 模型要收到明确的超时结果，状态要复位，用户要能接着聊，
+// 而且下一轮不能拖着上一轮的工具链。
+// ---------------------------------------------------------------------------
+
+describe('工具执行超时后的恢复', () => {
+  /** 让 readFile 永远不返回 —— 模拟一个卡住的读取 */
+  function hangingPlatform() {
+    const base = createToolCapablePlatform();
+    const platform: PlatformService = {
+      ...base.platform,
+      readFile: () => new Promise<never>(() => undefined),
+    };
+    return { platform };
+  }
+
+  /** 跑一次「超时」的工具轮次。整个过程在假时钟下推进，不用真等 15 秒。 */
+  async function runTimedOutRound(
+    chat: ReturnType<typeof createChatStore>,
+    approvals: boolean[] = [true]
+  ) {
+    vi.useFakeTimers();
+    try {
+      const running = chat.getState().resolveToolRequest(approvals);
+      await vi.advanceTimersByTimeAsync(16_000);
+      await running;
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it('超时后模型收到的是一条明确的超时结果，而不是空结果', async () => {
+    const { platform } = hangingPlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('slow.md', 'call_slow')] },
+      { text: '读不到就算了。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读一个可能很大的文件');
+    await runTimedOutRound(chat);
+
+    const second = captures[1]?.messages ?? [];
+    const toolTurn = second.find((turn) => turn.role === 'tool');
+
+    expect(toolTurn).toBeDefined();
+    // 要说清「是什么超时了」「等了多久放弃」，不能只写「失败」
+    expect(toolTurn?.content).toContain('读取失败');
+    expect(toolTurn?.content).toContain('超过');
+    expect(toolTurn?.content).toContain('秒');
+    // id 仍然对得上：超时也是一条正常的工具结果
+    expect(toolTurn?.toolCallId).toBe('call_slow');
+  });
+
+  it('超时后状态完全复位，不会停在 sending / streaming / toolRequest', async () => {
+    const { platform } = hangingPlatform();
+    const { provider } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('slow.md')] },
+      { text: '读不到。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读一下');
+    await runTimedOutRound(chat);
+
+    const state = chat.getState();
+    expect(state.sending).toBe(false);
+    expect(state.streaming).toBe(false);
+    expect(state.streamingMessageId).toBeNull();
+    expect(state.toolRequest).toBeNull();
+    expect(state.toolProgress).toEqual([]);
+    // 这一轮本身是正常结束的（超时是工具层面的事，不是整轮失败）
+    expect(state.lastOutcome).toBe('complete');
+    expect(state.error).toBeNull();
+  });
+
+  it('超时后用户能继续提问，新请求里不带上一轮残留的工具链', async () => {
+    const { platform } = hangingPlatform();
+    const { provider, captures } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('slow.md', 'call_slow')] },
+      { text: '读不到就算了。' },
+      { text: '那就聊点别的。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读一下');
+    await runTimedOutRound(chat);
+
+    // 接着问一个新的问题 —— 这就是「超时之后还能不能正常用」的验收点
+    await chat.getState().send('那算了，先聊别的');
+
+    const third = captures[2]?.messages ?? [];
+    expect(third.length).toBeGreaterThan(0);
+    // 上一轮的工具链一条都不能跟过来
+    expect(third.some((turn) => turn.role === 'tool')).toBe(false);
+    expect(third.some((turn) => (turn.toolCalls?.length ?? 0) > 0)).toBe(false);
+    expect(third.some((turn) => Boolean(turn.toolCallId))).toBe(false);
+
+    // 新的回答正常产生了
+    const last = captures[captures.length - 1];
+    expect(last).toBeDefined();
+    expect(chat.getState().error).toBeNull();
+  });
+
+  it('一个超时、一个成功时，两条工具结果都齐全，配对不被打断', async () => {
+    const base = createToolCapablePlatform();
+    const platform: PlatformService = {
+      ...base.platform,
+      readFile: (relativePath: string) =>
+        relativePath === 'slow.md'
+          ? new Promise<never>(() => undefined)
+          : Promise.resolve({
+              relativePath,
+              content: '内容:' + relativePath,
+              bytes: 12,
+              truncated: false,
+            }),
+    };
+
+    const { provider, captures } = createScriptedProvider([
+      {
+        text: '我读这两个。',
+        toolCalls: [fileCall('slow.md', 'call_slow'), fileCall('ok.md', 'call_ok')],
+      },
+      { text: '一个没读到，一个读到了。' },
+    ]);
+    const { chat } = await setup(provider, platform);
+
+    await chat.getState().send('读两个文件');
+    await runTimedOutRound(chat, [true, true]);
+
+    const second = captures[1]?.messages ?? [];
+    const toolTurns = second.filter((turn) => turn.role === 'tool');
+
+    // 两个调用都要有结果 —— 少一个服务端就会拒绝整次请求
+    expect(toolTurns).toHaveLength(2);
+    expect(toolTurns[0]?.toolCallId).toBe('call_slow');
+    expect(toolTurns[1]?.toolCallId).toBe('call_ok');
+    expect(toolTurns[0]?.content).toContain('读取失败');
+    expect(toolTurns[1]?.content).toContain('内容:ok.md');
+
+    // 界面上逐项列出：一项失败、一项成功
+    const items = chat.getState().toolOutcome;
+    expect(items).toHaveLength(2);
+    expect(items?.[0]?.ok).toBe(false);
+    expect(items?.[1]?.ok).toBe(true);
+
+    // assistant(tool_calls) 紧挨着第一条工具结果
+    const toolIndex = second.findIndex((turn) => turn.role === 'tool');
+    expect(second[toolIndex - 1]?.toolCalls).toHaveLength(2);
+  });
+
+  it('超时后不留半截消息：助手回答照常落库，没有消息卡在 streaming', async () => {
+    const { platform } = hangingPlatform();
+    const { provider } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('slow.md')] },
+      { text: '读不到就算了。' },
+    ]);
+    const { chat, conversations } = await setup(provider, platform);
+
+    await chat.getState().send('读一下');
+    await runTimedOutRound(chat);
+
+    const messages = conversations.getState().messages;
+    // 用户问了一句、助手答了两句（先说要读，再说读不到）
+    expect(messages.filter((item) => item.role === 'user')).toHaveLength(1);
+    expect(messages.filter((item) => item.role === 'assistant')).toHaveLength(2);
+
+    // 没有一条消息卡在 streaming 状态
+    expect(messages.every((item) => item.status !== 'streaming')).toBe(true);
+  });
+});
