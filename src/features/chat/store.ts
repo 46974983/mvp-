@@ -790,5 +790,41 @@ export function createChatStore(
     store.setState({ toolRequest: null, toolProgress: [], toolOutcome: null });
   });
 
+  /**
+   * 本地数据被重置成功之后，聊天这边**属于「当前会话 / 当前请求」的临时状态**
+   * 全部作废 —— 它们是内存里的东西，重置持久化数据时清不到。
+   *
+   * 典型症状：发截图时因为模型没开「支持图片输入」留下一条错误提示，
+   * 重置数据之后会话和设置都清空了，那条提示还杵在聊天顶部。
+   *
+   * 依赖方向是**单向的**：chat 订阅 settings 的递增信号，
+   * settings 既不知道也不需要 import chat。
+   *
+   * **sending / streaming / sendInFlight 刻意不在这里清**：
+   * 界面上正在生成时不允许重置（`DataPanel` 的重置按钮会禁用），
+   * 所以走到这里时它们本来就是 false。硬置 false 会和真正在飞的请求打架 ——
+   * 那会留下比「一条过时提示」更难看的状态。
+   */
+  settings.subscribe((state, previous) => {
+    if (state.dataResetVersion === previous.dataResetVersion) return;
+
+    // 工具链是模块级变量，不在 state 里，得单独清
+    clearToolTurns();
+    currentPlaceholderId = null;
+    cancelRequested = false;
+
+    store.setState({
+      error: null,
+      toolRequest: null,
+      toolProgress: [],
+      toolOutcome: null,
+      streamingText: '',
+      streamingMessageId: null,
+      lastOutcome: null,
+      // 待发送的附件是「这一次请求」的草稿，重置后不该还留着
+      pendingAttachments: [],
+    });
+  });
+
   return store;
 }

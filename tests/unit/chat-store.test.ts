@@ -1594,3 +1594,183 @@ describe('工具执行超时后的恢复', () => {
     expect(messages.every((item) => item.status !== 'streaming')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 重置本地数据后清理聊天临时状态
+//
+// 重置清的是持久化数据，清不到内存里的东西 —— 比如一条已经过时的错误提示。
+// 用 settings 上的递增信号（dataResetVersion）通知，依赖方向只有 chat → settings。
+// ---------------------------------------------------------------------------
+
+describe('重置本地数据后清理聊天临时状态', () => {
+  /** 一个必然失败的 provider，用来制造一条真实的 error */
+  function failingProvider(message: string): ModelProvider {
+    return {
+      id: 'failing',
+      label: '必然失败的 provider',
+      performsNetworkRequest: false,
+      async testConnection() {
+        return { ok: true, message: 'ok' };
+      },
+      async streamChat() {
+        throw new Error(message);
+      },
+      abort() {
+        /* 不用中断能力 */
+      },
+    };
+  }
+
+  it('重置成功后，聊天顶部的旧错误被清掉', async () => {
+    const { chat, settings } = await setup(failingProvider('这个模型不支持图片输入。'));
+
+    await chat.getState().send('看看这张截图');
+    expect(chat.getState().error).not.toBeNull();
+
+    await settings.getState().resetAll();
+
+    // 重置只清持久化数据，这条提示是内存里的 —— 正是这个 bug 的形态
+    expect(chat.getState().error).toBeNull();
+  });
+
+  it('待确认的工具请求也一并清掉', async () => {
+    const { platform } = createToolCapablePlatform();
+    const { provider } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('notes.md')] },
+      { text: '好。' },
+    ]);
+    const { chat, settings } = await setup(provider, platform);
+
+    await chat.getState().send('看看 notes.md');
+    expect(chat.getState().toolRequest).not.toBeNull();
+
+    await settings.getState().resetAll();
+
+    expect(chat.getState().toolRequest).toBeNull();
+    expect(chat.getState().toolProgress).toEqual([]);
+  });
+
+  it('工具执行结果、待发附件和流式残留都清空', async () => {
+    const { platform } = createToolCapablePlatform();
+    const { provider } = createScriptedProvider([
+      { text: '我读一下。', toolCalls: [fileCall('notes.md')] },
+      { text: '读完了。' },
+    ]);
+    const { chat, settings } = await setup(provider, platform);
+
+    await chat.getState().send('看看 notes.md');
+    await chat.getState().resolveToolRequest([true]);
+    expect(chat.getState().toolOutcome).not.toBeNull();
+
+    // 流式进度和待发附件很难在测试里稳定停在中间，直接摆上去测清理
+    chat.setState({
+      toolProgress: [{ index: 0, name: 'read_file', argumentChars: 12 }],
+      streamingText: '半截文本',
+      lastOutcome: 'complete',
+      pendingAttachments: [
+        {
+          kind: 'file',
+          name: 'notes.md',
+          relativePath: 'notes.md',
+          content: '内容',
+          bytes: 2,
+          truncated: false,
+        },
+      ],
+    });
+
+    await settings.getState().resetAll();
+
+    const state = chat.getState();
+    expect(state.toolOutcome).toBeNull();
+    expect(state.toolProgress).toEqual([]);
+    expect(state.streamingText).toBe('');
+    expect(state.lastOutcome).toBeNull();
+    expect(state.pendingAttachments).toEqual([]);
+  });
+
+  it('没发生重置时，普通的聊天错误不会被误清', async () => {
+    const { chat, settings } = await setup(failingProvider('出错了'));
+
+    await chat.getState().send('你好');
+    expect(chat.getState().error).not.toBeNull();
+
+    // 一次普通的设置写入：重置信号没推进，不该触发清理
+    await settings.getState().setScreenshotEnabled(false);
+
+    expect(chat.getState().error).not.toBeNull();
+  });
+
+  it('版本号没变时不会清理，变了才清', async () => {
+    const { chat, settings } = await setup(failingProvider('出错了'));
+    await chat.getState().send('你好');
+    const version = settings.getState().dataResetVersion;
+
+    // 同一个版本号重复写入：不该清
+    settings.setState({ dataResetVersion: version });
+    expect(chat.getState().error).not.toBeNull();
+
+    // 版本号推进：清
+    settings.setState({ dataResetVersion: version + 1 });
+    expect(chat.getState().error).toBeNull();
+  });
+
+  it('重置失败时不推进信号，聊天状态保持原样', async () => {
+    const base = createBrowserStorage(createMemoryStorage());
+    const failingStorage: StorageService = {
+      ...base,
+      reset: async () => {
+        throw new Error('删除凭据失败');
+      },
+    };
+
+    const { chat, settings } = await setup(
+      failingProvider('出错了'),
+      undefined,
+      failingStorage
+    );
+
+    await chat.getState().send('你好');
+    const before = chat.getState().error;
+    expect(before).not.toBeNull();
+    const versionBefore = settings.getState().dataResetVersion;
+
+    await expect(settings.getState().resetAll()).rejects.toThrow();
+
+    // 没成功就不推进信号，也不清 —— 用户正看着的那条提示不能被抹掉
+    expect(settings.getState().dataResetVersion).toBe(versionBefore);
+    expect(chat.getState().error).toBe(before);
+  });
+
+  it('重置后仍然可以新建会话并正常发送', async () => {
+    const { provider } = createScriptedProvider([{ text: '重置后的新回复。' }]);
+    const { chat, conversations, settings } = await setup(provider);
+
+    await chat.getState().send('重置前');
+    await settings.getState().resetAll();
+    // App 在重置成功之后会重新加载会话列表，这里照做
+    await conversations.getState().load();
+
+    await chat.getState().send('重置后');
+
+    expect(chat.getState().error).toBeNull();
+    const messages = conversations.getState().messages;
+    expect(messages.some((item) => item.content.includes('重置后的新回复'))).toBe(true);
+  });
+
+  it('两个独立的 store 实例互不影响（订阅是按实例的，不是全局总线）', async () => {
+    const first = await setup(failingProvider('出错了'));
+    const second = await setup(failingProvider('出错了'));
+
+    await first.chat.getState().send('你好');
+    await second.chat.getState().send('你好');
+
+    first.settings.setState({
+      dataResetVersion: first.settings.getState().dataResetVersion + 1,
+    });
+
+    expect(first.chat.getState().error).toBeNull();
+    // 另一个实例的信号没动，它不该被牵连
+    expect(second.chat.getState().error).not.toBeNull();
+  });
+});

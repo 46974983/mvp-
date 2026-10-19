@@ -8,7 +8,12 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { PLATFORM_CAPABILITIES, PLATFORM_CAPABILITY_SPECS, useSettingsStore } from '@/features';
+import {
+  PLATFORM_CAPABILITIES,
+  PLATFORM_CAPABILITY_SPECS,
+  useChatStore,
+  useSettingsStore,
+} from '@/features';
 
 interface DataPanelProps {
   onRequestReset: () => void;
@@ -36,6 +41,11 @@ export function DataPanel({ onRequestReset }: DataPanelProps) {
   const credentialStatus = useSettingsStore((state) => state.credentialStatus);
   const apiKeyStored = useSettingsStore((state) => state.apiKeyStored);
   const performsNetworkRequest = useSettingsStore((state) => state.performsNetworkRequest);
+  // 正在生成回复、或者有等待确认的访问请求时不让重置：
+  // 重置会把这一轮拦腰切断，留下半截消息和半截工具链
+  const chatBusy = useChatStore(
+    (state) => state.sending || state.streaming || state.toolRequest !== null
+  );
   const platformId = useSettingsStore((state) => state.platformId);
   const capabilities = useSettingsStore((state) => state.platformCapabilities);
 
@@ -192,9 +202,19 @@ export function DataPanel({ onRequestReset }: DataPanelProps) {
           </CardDescription>
         </CardHeader>
         <CardActions>
-          <Button variant="danger" data-testid="reset-data" onClick={onRequestReset}>
+          <Button
+            variant="danger"
+            data-testid="reset-data"
+            disabled={chatBusy}
+            onClick={onRequestReset}
+          >
             重置全部本地数据
           </Button>
+          {chatBusy && (
+            <span className="text-[11px] leading-relaxed text-muted-foreground">
+              正在生成回复或等待访问确认。先停下来再重置 —— 重置会把正在进行的这一轮切断。
+            </span>
+          )}
         </CardActions>
       </Card>
     </>

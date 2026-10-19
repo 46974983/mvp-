@@ -100,6 +100,19 @@ export interface SettingsState {
   /** 最近一次截屏。**只在内存里**，关掉能力时一并丢弃。 */
   lastScreenshot: Screenshot | null;
   /**
+   * 「本地数据重置成功」的递增信号。
+   *
+   * **不是持久化设置**，是一个只活在进程里的序号：每成功重置一次 +1。
+   *
+   * 存在的理由：重置会清掉持久化数据，但别的 store 手里还有属于
+   * 「当前会话 / 当前请求」的临时状态（比如一条已经过时的错误提示）。
+   * 让它们订阅这个序号自己清理，比让 settings 反过来去调用它们干净 ——
+   * **依赖方向只有一个**：谁有临时状态，谁来订阅。
+   *
+   * 只有**真正重置成功**才推进。失败时不推进，避免把用户当前的聊天状态误清掉。
+   */
+  dataResetVersion: number;
+  /**
    * 键鼠模拟是否开启。**默认关闭。**
    *
    * 这是全项目权限最重的一项 —— 前面几项最坏是「看到了不该看的」，
@@ -213,6 +226,7 @@ export function createSettingsStore(services: Services): SettingsStore {
     recentReads: [],
     screenshotEnabled: defaultSettings().permission.screenshot,
     lastScreenshot: null,
+    dataResetVersion: 0,
     inputSimulationEnabled: defaultSettings().permission.inputSimulation,
     automationRunning: false,
     automationReport: null,
@@ -661,8 +675,14 @@ export function createSettingsStore(services: Services): SettingsStore {
           services.platform.recentFileReads().catch(() => []),
         ]);
 
+      // 只有真正成功才推进重置信号。失败时**不推进** ——
+      // 别的 store 订阅它来清理临时状态，误推进就会把用户当前看到的东西清掉。
+      const nextResetVersion =
+        resetError === null ? get().dataResetVersion + 1 : get().dataResetVersion;
+
       set({
         settings: persistedSettings,
+        dataResetVersion: nextResetVersion,
         modelConfig: {
           apiUrl: persistedSettings.model.apiUrl,
           modelName: persistedSettings.model.modelName,
